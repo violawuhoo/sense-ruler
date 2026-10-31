@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Sense Ruler · σp 测量工具</title>
+<title>Sense Ruler · σp 测量工具 v2</title>
 <style>
   :root{
     --bg:#0f1420; --card:#1a2233; --ink:#e8eef7; --muted:#8aa0bf;
@@ -22,6 +22,8 @@
     background:#0f1626;color:var(--ink);font-size:15px}
   .row{display:flex;gap:10px}
   .row>*{flex:1}
+  .cb{display:inline-flex;align-items:center;gap:6px;margin:4px 10px 4px 0;color:var(--ink);font-size:14px}
+  .cb input{width:auto;margin:0}
   button{font-size:16px;padding:13px 16px;border-radius:10px;border:0;
     background:var(--acc);color:#06231f;font-weight:700;cursor:pointer;width:100%}
   button.ghost{background:#243149;color:var(--ink);font-weight:600}
@@ -34,8 +36,6 @@
   .wrap{max-width:860px;margin:0 auto}
   textarea{width:100%;height:110px;background:#0b101b;color:var(--muted);
     border:1px solid var(--line);border-radius:8px;padding:8px;font-size:12px}
-  .pill{display:inline-block;background:#243149;color:var(--muted);
-    border-radius:999px;padding:2px 10px;font-size:12px;margin-right:6px}
   .note{color:var(--muted);font-size:12px;margin-top:8px}
   .err{color:var(--bad)}
   .ok{color:var(--acc)}
@@ -44,16 +44,25 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Sense Ruler · σp 测量工具</h1>
-  <div class="sub">测量人类在「无参照 / 可见参照」下对长度的复现误差（相对标准差 CV）。复用原型「按住放绳」输入，用三关真实形状作参考。</div>
+  <h1>Sense Ruler · σp 测量工具 <span style="color:var(--muted);font-size:13px">v2 · 四分类条件化</span></h1>
+  <div class="sub">按游戏内容四分类（朝向 / 折线 / 曲线 / 闭合）分别测量「学会规则后的残差」。可学习的系统偏差（翻倍盲等）通过<b>规则前置</b>剥离，只量容差真正要盖住的随机误差。</div>
 
   <!-- 配置 -->
   <div class="card" id="cfgCard">
     <label>被试编号 (PID)</label>
     <input id="pid" placeholder="如 p01 / 张三" value="">
+    <label>测量条件（对应游戏四分类，默认全选）</label>
+    <div id="typeBox">
+      <label class="cb"><input type="checkbox" value="orient" checked>朝向 · 斜线</label>
+      <label class="cb"><input type="checkbox" value="fold" checked>折线 · 对折（规则前置）</label>
+      <label class="cb"><input type="checkbox" value="arc" checked>曲线 · 弧长</label>
+      <label class="cb"><input type="checkbox" value="circle" checked>闭合 · 圆</label>
+      <label class="cb"><input type="checkbox" value="square" checked>闭合 · 方</label>
+      <label class="cb"><input type="checkbox" value="triangle" checked>闭合 · 三角</label>
+    </div>
     <div class="row">
       <div>
-        <label>参考长度(px)，按关卡顺序：沟 / 圆周长 / 方周长</label>
+        <label>参考长度(px)，对每个选中条件各测一轮</label>
         <input id="refs" value="194,283,220">
       </div>
       <div>
@@ -68,7 +77,7 @@
       <option value="visible">仅可见（目标常驻，对齐）</option>
     </select>
     <label style="margin-top:10px"><input type="checkbox" id="incTau" style="width:auto;display:inline;margin-right:6px">包含松手延迟 τ 校准任务</label>
-    <div class="note">默认参考长度对应原型三关目标：沟 194 / 圆周长 283（r≈45）/ 方周长 220（边 55）。可在原型改完容差后同步调整。</div>
+    <div class="note">对折条件的期望产出 = 2×参考长度（规则已前置告知）；其余条件期望 = 参考长度。弹簧不设条件：首遇偏差过大且不可学，留待实机 playtest 校准。</div>
     <button id="startBtn" style="margin-top:12px">开始测量</button>
   </div>
 
@@ -86,8 +95,8 @@
 
   <!-- 统计 -->
   <div class="card" id="statCard" style="display:none">
-    <b>实时统计（按参考长度）</b>
-    <table id="statTable"><thead><tr><th>参考长度</th><th>形状</th><th>n</th><th>均值</th><th>标准差</th><th>CV%</th></tr></thead><tbody></tbody></table>
+    <b>实时统计（按 条件 × 参考长度）</b>
+    <table id="statTable"><thead><tr><th>条件</th><th>参考长度</th><th>期望</th><th>n</th><th>均值</th><th>标准差</th><th>CV%</th></tr></thead><tbody></tbody></table>
     <div id="tauOut" class="note"></div>
   </div>
 
@@ -100,19 +109,22 @@
       <button id="copyBtn" class="ghost">复制 CSV</button>
     </div>
     <textarea id="csvView" readonly></textarea>
-    <div class="note">把 CSV 的「按参考长度 CV%」平均值（尤其记忆条件）作为 σp 填进 <code>sense_ruler_montecarlo.py</code> 的 <code>SCEN.sigma_p</code>。详见页面底部说明。</div>
+    <div class="note">每个「条件 × 参考长度」的 CV%（尤其记忆条件）即该类的残差，<b>分条件</b>填进 <code>sense_ruler_montecarlo.py</code>（对折条件对照期望 2×ref 检查均值是否已按规则翻倍）。详见底部说明。</div>
   </div>
 
   <!-- 说明 -->
   <div class="card">
-    <b>方法说明 / 局限</b>
+    <b>方法说明 / 局限（v2）</b>
     <div class="note">
-      <p>· <b>记忆条件</b>：参考形状仅预览 1.6s 后隐藏，被试凭记忆放出等长绳——测量的是「复现误差」，更接近游戏里跨维度估长的真实失准。</p>
-      <p>· <b>可见条件</b>：目标常驻，被试对齐即可——测的是对齐精度下限。</p>
-      <p>· 本工具复用原型输入（按住 110px/s 放绳、松手定长），<b>无微调阶段</b>，因此测得的是「感知 + 松手延迟」的<b>总误差</b>。</p>
-      <p>· 用法约定：把测得的总 CV 当作 σp 填进 Monte Carlo，并<b>把脚本里的 <code>MU_TAU / SD_TAU</code> 设到接近 0</b>（因为电机误差已包含在实测里），避免重复计入。</p>
-      <p>· 局限：本工具用「绳→同形状」1:1 呈现，而游戏里 L1 是高度→宽度、L2/L3 是长度→周长的<b>跨维度</b>换算，真实失准可能更大。建议实测 σp 后再给容差留约 20–30% 余量，该系数标 [PLACEHOLDER·待验证]。</p>
-      <p>· τ 校准任务（可选）：标记以固定速度移动，越过目标线时松手，记录时间差 Δt，换算 px = 110×Δt，得到松手延迟分布，可单独用于 Monte Carlo 的 τ 项。</p>
+      <p>· <b>四分类条件化</b>：游戏内不同类的失准机制不同，σp 不应是一个数。本版按类分条件测量，每类得到各自的残差 CV。</p>
+      <p>· <b>朝向·斜线</b>：参考线以 0°/30°/60°/120° 随试次轮换，纯 1:1 匹配——量「角度对长度判断的干扰」。</p>
+      <p>· <b>折线·对折（规则前置）</b>：显示目标跨度，并明确告知「绳子会对折，总长÷2=跨度」——翻倍盲是可学习规则，被前置剥离后，量的是玩家围绕 <b>2×ref</b> 的残差（统计表「期望」列）。</p>
+      <p>· <b>曲线·弧</b>：目标弧固定矢高，匹配<b>弧长</b>（绳即弧，同形缩放），不考「弧&gt;弦」规则本身。</p>
+      <p>· <b>闭合·圆/方/三角</b>：匹配<b>周长</b>，三角为等边。</p>
+      <p>· <b>记忆条件</b>：参考预览 1.6s 后隐藏，凭记忆复现——更接近真实失准；<b>可见条件</b>：目标常驻，对齐下限。</p>
+      <p>· 复用原型输入（按住 110px/s 放绳），<b>无微调阶段</b>，测得「感知+松手延迟」总误差：填进 Monte Carlo 后把 <code>MU_TAU/SD_TAU</code> 设近 0，避免重复计入。</p>
+      <p>· <b>弹簧不设条件</b>：螺旋藏线的首遇偏差过大且不可学，放测量页只会得到无意义的巨大 CV；其难度校准留给实机 playtest（或将来做「可见圈数」条件单独量）。</p>
+      <p>· τ 校准（可选）：标记匀速移动，越线松手，Δt→px=110×Δt，单独供 Monte Carlo 的 τ 项。</p>
     </div>
   </div>
 </div>
@@ -123,8 +135,18 @@
   const cv = document.getElementById('cv');
   const ctx = cv.getContext('2d');
   const W = cv.width, H = cv.height;
-  const GROUND_Y = 360, HAND_X = 180, HAND_H = 40, GROW = 110;
-  const SHAPES = ['line','circle','square'];
+  const GROW = 110;
+  const TYPES = [
+    {id:'orient',   name:'朝向·斜线'},
+    {id:'fold',     name:'折线·对折'},
+    {id:'arc',      name:'曲线·弧'},
+    {id:'circle',   name:'闭合·圆'},
+    {id:'square',   name:'闭合·方'},
+    {id:'triangle', name:'闭合·三角'},
+  ];
+  const ANGLES = [0, 30, 60, 120];
+  const typeById = id => TYPES.find(t=>t.id===id);
+  const expectedOf = t => t.type==='fold' ? 2*t.ref : t.ref;
 
   const $ = id => document.getElementById(id);
   function setStatus(t, cls){ const s=$('status'); s.textContent=t; s.className=cls||''; }
@@ -132,9 +154,9 @@
   // ---- 状态 ----
   let phase='config';            // config | preview | grow | adjust | tau_intro | tau_run | done
   let tasks=[], ti=0;
-  let task=null;                 // {ref, cond, shape, idx}
+  let task=null;                 // {type, ref, cond, angle, idx}
   let ropeLen=0, growing=false, lastT=0, previewStart=0;
-  let data=[];                   // {pid,trial,ref,cond,shape,produced,ts}
+  let data=[];                   // {pid,trial,type,ref,cond,angle,produced,expected,ts}
   let tauSamples=[], tauRunning=false, tauX=50, tauTarget=400, tauV=320, tauN=8, tauDone=0;
   let includeTau=false;
 
@@ -145,28 +167,43 @@
     const tpr = Math.max(1, parseInt($('tpr').value)||5);
     const cond = $('cond').value;
     const conds = cond==='both' ? ['memory','visible'] : [cond];
-    tasks = [];
-    refs.forEach((ref,idx)=>{
-      conds.forEach(c=>{ for(let k=0;k<tpr;k++) tasks.push({ref, cond:c, shape:SHAPES[idx%SHAPES.length], idx}); });
+    const types = [...document.querySelectorAll('#typeBox input:checked')].map(i=>i.value);
+    tasks = []; let k=0;
+    types.forEach(tid=>{
+      refs.forEach(ref=>{
+        conds.forEach(c=>{
+          for(let n=0;n<tpr;n++){
+            tasks.push({type:tid, ref, cond:c, angle:ANGLES[k%ANGLES.length], idx:k});
+            k++;
+          }
+        });
+      });
     });
     shuffle(tasks);
   }
 
+  function previewText(t){
+    if(t.type==='fold') return '规则提示：绳子会对折成双股，总长 ÷2 = 跨度。先记住目标跨度（1.6s）';
+    return '先记住参考形状（1.6s）';
+  }
   function startTask(){
     task = tasks[ti];
     ropeLen = 0; growing = false;
     phase = 'preview'; previewStart = performance.now();
     $('growBtn').disabled = true; $('confirmBtn').disabled = true; $('retryBtn').disabled = true;
-    setStatus(`第 ${ti+1}/${tasks.length} 次 — 先记住参考形状（1.6s）`, '');
+    setStatus(`第 ${ti+1}/${tasks.length} 次 · ${typeById(task.type).name} — ${previewText(task)}`, '');
   }
-
   function beginGrow(){
-    phase = (task.cond==='memory') ? 'grow' : 'grow';
+    phase = 'grow';
     growing = false; ropeLen = 0;
     $('growBtn').disabled = false; $('retryBtn').disabled = false;
-    setStatus(task.cond==='memory'
+    let msg = task.cond==='memory'
       ? '参考已隐藏 — 凭记忆按住放绳，松手定长'
-      : '参考常驻（虚线）— 对齐后松手', '');
+      : '参考常驻（虚线）— 对齐后松手';
+    if(task.type==='fold') msg = '对折规则：总长÷2=跨度。' + msg;
+    if(task.type==='arc')  msg = '匹配弧长（绳即弧，同形缩放）。' + msg;
+    if(task.type==='circle'||task.type==='square'||task.type==='triangle') msg = '匹配周长。' + msg;
+    setStatus(msg, '');
   }
 
   // ---- 主循环 ----
@@ -176,58 +213,120 @@
     if(phase==='preview' && now - previewStart > 1600){ beginGrow(); }
     if(phase==='tau_run' && tauRunning){
       tauX += tauV*dt;
-      if(tauX > W-40){ tauX = 50; } // 循环，等松手
+      if(tauX > W-40){ tauX = 50; }
     }
     draw();
     requestAnimationFrame(loop);
   }
 
   // ---- 绘制 ----
+  const TARGET='rgba(120,170,210,.9)', ROPE='#ffce6b', STRUCT='#243149';
   function draw(){
     ctx.clearRect(0,0,W,H);
     ctx.fillStyle='#0b101b'; ctx.fillRect(0,0,W,H);
     const showT = (phase!=='preview') ? (task && task.cond==='visible') : true;
     if(task){
-      if(task.shape==='line') drawLine(task.ref, ropeLen, showT);
-      else if(task.shape==='circle') drawCircle(task.ref, ropeLen, showT);
-      else drawSquare(task.ref, ropeLen, showT);
+      if(task.type==='orient') drawOrient(task, ropeLen, showT);
+      else if(task.type==='fold') drawFold(task, ropeLen, showT);
+      else if(task.type==='arc') drawArc(task, ropeLen, showT);
+      else drawPerim(task, ropeLen, showT);
     }
     if(phase==='tau_run' || phase==='tau_intro') drawTau();
   }
-  function hand(){ ctx.fillStyle='#5ad1c4'; ctx.beginPath(); ctx.arc(HAND_X, GROUND_Y-HAND_H, 9, 0, 7); ctx.fill();
-    ctx.strokeStyle='#5ad1c4'; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(HAND_X,GROUND_Y-HAND_H); ctx.lineTo(HAND_X,GROUND_Y); ctx.stroke(); }
+  function dot(x,y,r,c){ ctx.fillStyle=c||TARGET; ctx.beginPath(); ctx.arc(x,y,r||6,0,7); ctx.fill(); }
 
-  function drawLine(ref, len, showT){
-    ctx.fillStyle='#243149';
-    ctx.fillRect(0, GROUND_Y, HAND_X, H-GROUND_Y);
-    if(showT){ ctx.fillRect(HAND_X+ref, GROUND_Y, W-(HAND_X+ref), H-GROUND_Y);
-      ctx.strokeStyle='rgba(120,170,210,.9)'; ctx.lineWidth=5; ctx.setLineDash([10,8]);
-      ctx.beginPath(); ctx.moveTo(HAND_X,GROUND_Y); ctx.lineTo(HAND_X+ref,GROUND_Y); ctx.stroke(); ctx.setLineDash([]);
+  // 朝向·斜线：基点固定，参考线按角度轮换，1:1 匹配长度
+  function drawOrient(t, len, showT){
+    const bx=230, by=340, th=t.angle*Math.PI/180;
+    const dx=Math.cos(th), dy=-Math.sin(th);
+    ctx.fillStyle=STRUCT; ctx.fillRect(0,380,W,70);
+    if(showT){
+      ctx.strokeStyle=TARGET; ctx.lineWidth=5; ctx.setLineDash([10,8]);
+      ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(bx+dx*t.ref, by+dy*t.ref); ctx.stroke(); ctx.setLineDash([]);
     }
-    if(len>0){ ctx.strokeStyle='#ffce6b'; ctx.lineWidth=7; ctx.beginPath(); ctx.moveTo(HAND_X,GROUND_Y); ctx.lineTo(HAND_X+len,GROUND_Y); ctx.stroke(); }
-    hand();
+    if(len>0){
+      ctx.strokeStyle=ROPE; ctx.lineWidth=7; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(bx,by); ctx.lineTo(bx+dx*len, by+dy*len); ctx.stroke();
+    }
+    dot(bx,by,8,'#e8eef7');
+    ctx.fillStyle='#8aa0bf'; ctx.font='13px sans-serif';
+    ctx.fillText(`角度 ${t.angle}°`, 20, 30);
   }
-  function drawCircle(ref, len, showT){
-    const cx=420, cy=300;
-    if(showT){ const rt=ref/(2*Math.PI);
-      ctx.strokeStyle='rgba(120,170,210,.9)'; ctx.lineWidth=5; ctx.setLineDash([10,8]);
-      ctx.beginPath(); ctx.ellipse(cx,cy,rt,rt*0.5,0,0,7); ctx.stroke(); ctx.setLineDash([]);
+  // 折线·对折：两立柱夹目标跨度 L；绳对折成双股，单股长 = 总长/2
+  function drawFold(t, len, showT){
+    const x1=250, y=300, x2=x1+t.ref;
+    ctx.fillStyle=STRUCT; ctx.fillRect(0,380,W,70);
+    ctx.strokeStyle='#4a5d7d'; ctx.lineWidth=8; ctx.lineCap='butt';
+    ctx.beginPath(); ctx.moveTo(x1,300); ctx.lineTo(x1,380); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x2,300); ctx.lineTo(x2,380); ctx.stroke();
+    if(showT){
+      ctx.strokeStyle=TARGET; ctx.lineWidth=5; ctx.setLineDash([10,8]);
+      ctx.beginPath(); ctx.moveTo(x1,300); ctx.lineTo(x2,300); ctx.stroke(); ctx.setLineDash([]);
     }
-    if(len>0){ const rp=len/(2*Math.PI);
-      ctx.strokeStyle='#ffce6b'; ctx.lineWidth=7; ctx.beginPath(); ctx.ellipse(cx,cy,rp,rp*0.5,0,0,7); ctx.stroke();
+    if(len>0){
+      const s=len/2;
+      ctx.strokeStyle=ROPE; ctx.lineWidth=6; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(x1,288); ctx.lineTo(x1+s,288); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x1,312); ctx.lineTo(x1+s,312); ctx.stroke();
+      dot(x1+s,300,7,ROPE);
     }
-    hand();
+    ctx.fillStyle='#8aa0bf'; ctx.font='13px sans-serif';
+    ctx.fillText('对折规则：总长 ÷2 = 跨度', 20, 30);
   }
-  function drawSquare(ref, len, showT){
-    const cx=420, cy=300;
-    if(showT){ const at=ref/4;
-      ctx.strokeStyle='rgba(120,170,210,.9)'; ctx.lineWidth=5; ctx.setLineDash([10,8]);
-      ctx.strokeRect(cx-at/2, cy-at/2, at, at); ctx.setLineDash([]);
+  // 曲线·弧：固定矢高的半圆弧，匹配弧长（r = 弧长/π）
+  function drawArc(t, len, showT){
+    const cx=420, base=380;
+    ctx.fillStyle=STRUCT; ctx.fillRect(0,380,W,70);
+    if(showT){
+      const rT=t.ref/Math.PI;
+      ctx.strokeStyle=TARGET; ctx.lineWidth=5; ctx.setLineDash([10,8]);
+      ctx.beginPath(); ctx.arc(cx,base,rT,Math.PI,2*Math.PI,false); ctx.stroke(); ctx.setLineDash([]);
+      dot(cx-rT,base,5); dot(cx+rT,base,5);
     }
-    if(len>0){ const ap=len/4;
-      ctx.strokeStyle='#ffce6b'; ctx.lineWidth=7; ctx.strokeRect(cx-ap/2, cy-ap/2, ap, ap);
+    if(len>0){
+      const rP=len/Math.PI;
+      ctx.strokeStyle=ROPE; ctx.lineWidth=7; ctx.lineCap='round';
+      ctx.beginPath(); ctx.arc(cx,base,rP,Math.PI,2*Math.PI,false); ctx.stroke();
     }
-    hand();
+    ctx.fillStyle='#8aa0bf'; ctx.font='13px sans-serif';
+    ctx.fillText('匹配弧长（沿曲线的长度）', 20, 30);
+  }
+  // 闭合·圆/方/三角：匹配周长
+  function drawPerim(t, len, showT){
+    const cx=420, cy=270;
+    if(showT){
+      ctx.strokeStyle=TARGET; ctx.lineWidth=5; ctx.setLineDash([10,8]);
+      if(t.type==='circle'){
+        const r=t.ref/(2*Math.PI);
+        ctx.beginPath(); ctx.ellipse(cx,cy,r,r*0.5,0,0,7); ctx.stroke();
+      }else if(t.type==='square'){
+        const a=t.ref/4;
+        ctx.strokeRect(cx-a/2, cy-a/2, a, a);
+      }else{
+        const a=t.ref/3, h=a*Math.sqrt(3)/2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy-2*h/3); ctx.lineTo(cx-a/2, cy+h/3); ctx.lineTo(cx+a/2, cy+h/3);
+        ctx.closePath(); ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+    if(len>0){
+      ctx.strokeStyle=ROPE; ctx.lineWidth=7; ctx.lineJoin='round';
+      if(t.type==='circle'){
+        const r=len/(2*Math.PI);
+        ctx.beginPath(); ctx.ellipse(cx,cy,r,r*0.5,0,0,7); ctx.stroke();
+      }else if(t.type==='square'){
+        const a=len/4;
+        ctx.strokeRect(cx-a/2, cy-a/2, a, a);
+      }else{
+        const a=len/3, h=a*Math.sqrt(3)/2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy-2*h/3); ctx.lineTo(cx-a/2, cy+h/3); ctx.lineTo(cx+a/2, cy+h/3);
+        ctx.closePath(); ctx.stroke();
+      }
+    }
+    ctx.fillStyle='#8aa0bf'; ctx.font='13px sans-serif';
+    ctx.fillText('匹配周长（首尾相接一圈）', 20, 30);
   }
   function drawTau(){
     ctx.fillStyle='#243149'; ctx.fillRect(0,200,W,40);
@@ -240,7 +339,9 @@
   function down(e){ if(phase!=='grow'||growing) return; e.preventDefault(); growing=true; }
   function up(e){ if(phase!=='grow'||!growing) return; e.preventDefault(); growing=false;
     if(ropeLen>4){ phase='adjust'; $('confirmBtn').disabled=false;
-      setStatus(`本次绳长 ${Math.round(ropeLen)}px — 确认或重来`, 'ok'); }
+      const eff = task.type==='fold' ? Math.round(ropeLen/2) : Math.round(ropeLen);
+      const unit = task.type==='fold' ? `（对折后跨度 ${eff}px）` : '';
+      setStatus(`本次绳长 ${Math.round(ropeLen)}px${unit} — 确认或重来`, 'ok'); }
   }
   const gb=$('growBtn');
   gb.addEventListener('pointerdown', down);
@@ -250,8 +351,9 @@
 
   $('confirmBtn').addEventListener('click', ()=>{
     if(phase!=='adjust') return;
-    data.push({pid:$('pid').value||'NA', trial:ti+1, ref:task.ref, cond:task.cond,
-      shape:task.shape, produced:Math.round(ropeLen), ts:Date.now()});
+    data.push({pid:$('pid').value||'NA', trial:ti+1, type:task.type, ref:task.ref, cond:task.cond,
+      angle:task.type==='orient'?task.angle:'', produced:Math.round(ropeLen),
+      expected:expectedOf(task), ts:Date.now()});
     ti++; updateStats();
     if(ti>=tasks.length){ phase = includeTau ? 'tau_intro' : 'done'; afterRun(); }
     else startTask();
@@ -289,22 +391,23 @@
   function updateStats(){
     $('statCard').style.display='block';
     const by={};
-    data.forEach(d=>{ (by[d.ref]=by[d.ref]||[]).push(d.produced); });
+    data.forEach(d=>{ const k=d.type+'@'+d.ref; (by[k]=by[k]||[]).push(d.produced); });
     const tb=$('statTable').querySelector('tbody'); tb.innerHTML='';
-    Object.keys(by).map(Number).sort((a,b)=>a-b).forEach(ref=>{
-      const arr=by[ref]; const n=arr.length;
+    Object.keys(by).sort().forEach(k=>{
+      const arr=by[k]; const n=arr.length;
       const mean=arr.reduce((a,b)=>a+b,0)/n;
       const sd=Math.sqrt(arr.reduce((a,b)=>a+(b-mean)*(b-mean),0)/n);
       const cv=(sd/mean)*100;
-      const sh=SHAPES.find((s,i)=> (tasks.find(t=>t.ref===ref))?.shape===s) || '';
+      const [type,ref]=k.split('@');
+      const exp=type==='fold'?2*Number(ref):Number(ref);
       const tr=document.createElement('tr');
-      tr.innerHTML=`<td>${ref}</td><td>${sh}</td><td>${n}</td><td>${mean.toFixed(1)}</td><td>${sd.toFixed(1)}</td><td>${cv.toFixed(1)}%</td>`;
+      tr.innerHTML=`<td>${typeById(type).name}</td><td>${ref}</td><td>${exp}</td><td>${n}</td><td>${mean.toFixed(1)}</td><td>${sd.toFixed(1)}</td><td>${cv.toFixed(1)}%</td>`;
       tb.appendChild(tr);
     });
   }
   function csv(){
-    let s='pid,trial,ref,cond,shape,produced,ts\n';
-    data.forEach(d=> s+=`${d.pid},${d.trial},${d.ref},${d.cond},${d.shape},${d.produced},${d.ts}\n`);
+    let s='pid,trial,type,ref,cond,angle,produced,expected,ts\n';
+    data.forEach(d=> s+=`${d.pid},${d.trial},${d.type},${d.ref},${d.cond},${d.angle},${d.produced},${d.expected},${d.ts}\n`);
     return s;
   }
   function download(name, content, type){
@@ -315,7 +418,7 @@
     $('expCard').style.display='block';
     $('csvView').value=csv();
     $('prog').textContent=`${ti} / ${tasks.length}`;
-    if(phase==='done') setStatus('测量完成 ✅ 导出数据后填入 Monte Carlo。', 'ok');
+    if(phase==='done') setStatus('测量完成 ✅ 导出数据后按条件填入 Monte Carlo。', 'ok');
   }
   $('csvBtn').onclick=()=>download(`sigmap_${$('pid').value||'NA'}.csv`, csv(), 'text/csv');
   $('jsonBtn').onclick=()=>download(`sigmap_${$('pid').value||'NA'}.json`, JSON.stringify(data,null,2), 'application/json');
@@ -326,7 +429,7 @@
     if(!$('pid').value.trim()){ setStatus('请先填写被试编号', 'err'); return; }
     includeTau=$('incTau').checked;
     buildTasks();
-    if(!tasks.length){ setStatus('参考长度无效', 'err'); return; }
+    if(!tasks.length){ setStatus('请至少选择一个测量条件，且参考长度有效', 'err'); return; }
     $('cfgCard').style.display='none'; $('runCard').style.display='block';
     ti=0; startTask();
     requestAnimationFrame(loop);
@@ -334,7 +437,8 @@
 
   // 暴露调试探针（仅用于自动化冒烟测试）
   window.__dbg={ get phase(){return phase;}, get data(){return data;}, get ti(){return ti;},
-    get ropeLen(){return ropeLen;}, get task(){return task;}, forceCommit(){ $('confirmBtn').click(); } };
+    get ropeLen(){return ropeLen;}, get task(){return task;},
+    get tasks(){return tasks;}, forceCommit(){ $('confirmBtn').click(); } };
 })();
 </script>
 </body>
