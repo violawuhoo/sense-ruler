@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>感觉尺 · 森林之旅</title>
+<style>
+  html,body{margin:0;height:100%;background:#e6ede0;overflow:hidden;
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
+  canvas{display:block;width:100%;height:100%;touch-action:none;}
+  #hint{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);
+    color:#4a5340;font-size:15px;letter-spacing:1px;pointer-events:none;
+    transition:opacity .3s;white-space:nowrap;text-align:center;max-width:92vw;
+    text-shadow:0 1px 3px rgba(255,255,255,0.8);}
+  #topbar{position:fixed;top:10px;right:10px;display:flex;gap:8px;z-index:5}
+  #topbar button{font:600 13px/1 -apple-system,"PingFang SC",sans-serif;
+    padding:9px 12px;border:0;border-radius:999px;background:rgba(255,255,255,.82);
+    color:#3a3a30;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.12)}
+  #panel{position:fixed;inset:0;background:rgba(20,24,18,.55);display:none;
+    z-index:6;align-items:center;justify-content:center;padding:16px}
+  #panel .box{background:#f4f7ef;border-radius:14px;padding:16px;max-width:520px;width:100%;
+    box-shadow:0 8px 30px rgba(0,0,0,.28)}
+  #panel h3{margin:0 0 4px;font-size:16px;color:#3a3a30}
+  #panel .sub{color:#6b7260;font-size:12px;margin-bottom:12px}
+  #panel .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px}
+  #panel .lv{text-align:left;padding:10px 12px;border-radius:10px;border:1px solid #cfd8c6;
+    background:#fff;cursor:pointer;font-size:13px;color:#3a3a30}
+  #panel .lv .t{font-weight:700;display:block}
+  #panel .lv .c{color:#7c8470;font-size:11px}
+  #panel .lv[disabled]{opacity:.45;cursor:not-allowed}
+  #panel .acts{margin-top:12px;display:flex;gap:8px}
+  #panel .acts button{flex:1;padding:10px;border:0;border-radius:10px;cursor:pointer;
+    font-weight:700;background:#8aa87a;color:#fff}
+  #panel .acts button.ghost{background:#dfe5d8;color:#3a3a30}
+  @media (max-width:520px){ #hint{font-size:13px;bottom:18px} #topbar button{padding:8px 10px;font-size:12px} }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint"></div>
+<div id="topbar">
+  <button id="btnLevels">关卡</button>
+  <button id="btnData">数据</button>
+</div>
+<div id="panel"><div class="box">
+  <h3 id="pTitle">关卡</h3>
+  <div class="sub" id="pSub"></div>
+  <div class="grid" id="pGrid"></div>
+  <div class="acts">
+    <button id="pClose" class="ghost">关闭</button>
+    <button id="pReset">清空进度</button>
+  </div>
+</div></div>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hintEl = document.getElementById('hint');
+
+const VIEW_W = 960, VIEW_H = 540;
+const GROUND_Y = 440;
+const WORLD_W = 4200;
+
+let W, H, DPR, scale = 1, offsetX = 0, offsetY = 0;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  scale = Math.min(W / VIEW_W, H / VIEW_H);
+  offsetX = (W - VIEW_W * scale) / 2;
+  offsetY = (H - VIEW_H * scale) / 2;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ===== 形状类型系统（T2）：每个形状 = judge(判定标量) + band(容差) + snap(表现) + renderShape + ghost =====
+// 所有容差均为 [PLACEHOLDER · 待 σp 实测验证]
+const ROPE_C = '#c96f2e', ROPE_H = '#e89a55';
+
+function strokeShape(pts, alpha, closeIt) {
+  if (alpha <= 0 || pts.length < 2) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  const doPath = (dy) => {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1] + dy);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1] + dy);
+    if (closeIt) ctx.closePath();
+  };
+  ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 10; doPath(2); ctx.stroke();
+  ctx.strokeStyle = ROPE_C; ctx.lineWidth = 7; doPath(0); ctx.stroke();
+  ctx.strokeStyle = ROPE_H; ctx.lineWidth = 2.5; doPath(-1.5); ctx.stroke();
+  ctx.restore();
+}
+function ghostShape(pts, closeIt) {   // 正确形状鬼影（P2：只给相对/位置信息，不给数值）
+  if (pts.length < 2) return;
+  ctx.save();
+  ctx.globalAlpha = 0.75;
+  ctx.strokeStyle = 'rgba(90,150,200,0.95)';
+  ctx.lineWidth = 5; ctx.setLineDash([10, 8]); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  if (closeIt) ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+function cueShape(pts, closeIt, alpha) { // 场景目标提示（虚线，呼吸闪烁）
+  if (pts.length < 2) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = `rgba(255,205,90,${alpha})`;
+  ctx.lineWidth = 4; ctx.setLineDash([8, 7]); ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  if (closeIt) ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+}
+function ellipsePts(cx, cy, rx, ry, n) {
+  const p = [];
+  for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; p.push([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry]); }
+  return p;
+}
+function rectPts(cx, cy, A) { const h = A / 2; return [[cx-h,cy-h],[cx+h,cy-h],[cx+h,cy+h],[cx-h,cy+h]]; }
+function triPts(cx, baseY, a) {
+  const h = a * Math.sqrt(3) / 2;
+  return [[cx - a/2, baseY], [cx + a/2, baseY], [cx, baseY - h]];
+}
+// 已知弦长 C 与弧长 L，求圆段半径/矢高（二分求解 θ/sinθ = L/C）
+function arcSeg(C, L) {
+  const target = L / C;
+  if (!(target > 1.0005)) return { R: C / 2 / 1e-4, sag: 0, th: 1e-4 };
+  let lo = 1e-4, hi = Math.PI / 2 - 1e-4;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (mid / Math.sin(mid) < target) lo = mid; else hi = mid;
+  }
+  const th = (lo + hi) / 2, R = C / (2 * Math.sin(th));
+  return { R, sag: R * (1 - Math.cos(th)), th };
+}
+function arcPts(cxL, cxR, baseY, L, n) {
+  const C = cxR - cxL;
+  if (L <= C * 1.002) return [[cxL, baseY], [cxR, baseY]];
+  const seg = arcSeg(C, L);
+  const cx = (cxL + cxR) / 2, cy = baseY + seg.R * Math.cos(seg.th);
+  const a0 = -(Math.PI / 2 + seg.th), a1 = seg.th - Math.PI / 2;
+  const p = [];
+  for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * (i / n); p.push([cx + Math.cos(a) * seg.R, cy + Math.sin(a) * seg.R]); }
+  return p;
+}
+// 不规则闭合：固定形状模板（比例与角度写死，方案X），按周长缩放
+const POLY_TPL = [[-40,0],[30,0],[52,-34],[-18,-46]];
+let POLY_BASE = 0;
+(function(){ for (let i=0;i<POLY_TPL.length;i++){ const a=POLY_TPL[i], b=POLY_TPL[(i+1)%POLY_TPL.length]; POLY_BASE += Math.hypot(b[0]-a[0], b[1]-a[1]); } })();
+function polyPts(cx, baseY, perim) {
+  const s = perim / POLY_BASE;
+  return POLY_TPL.map(p => [cx + p[0] * s, baseY + p[1] * s]);
+}
+
+// ===== 关卡（按跨类序：朝向 → 折线 → 曲线 → 闭合）=====
+const LEVELS = [
+  {
+    id:'gap', cls:'朝向', name:'横桥', shape:'line',
+    triggerX:500, handX:512, handY:GROUND_Y-40,
+    initLen:40, maxLen:300, growSpeed:110,
+    gapX1:522, gapX2:682, exitX:800, introDuration:2.0,
+    judge:(len)=>len, band:[166,222],           // [PLACEHOLDER]
+    snap:(len)=>len,
+    introText:'路断了。画一根桥，搭过去吧。',
+    hintReady:'按住屏幕，让绳子从手中生长', hintFixed:'点击屏幕，把绳子放倒',
+    failShort:'短了一截…', failShortHint:'从手里放下来，长度会短一截',
+    failLong:'太长了，桥头翘起来…', failLongHint:'太长了，桥头搭不住',
+    renderShape(lenEff, alpha, offY, t){
+      if (t != null && t < 1) {                 // 放倒动画（保持原观感）
+        const sy = this.handY + (GROUND_Y - this.handY) * t;
+        const ang = -Math.PI/2 + (Math.PI/2) * t;
+        return strokeShape([[this.handX, sy + offY],
+          [this.handX + Math.cos(ang) * ropeLen, sy + Math.sin(ang) * ropeLen + offY]], alpha, false);
+      }
+      strokeShape([[this.handX, GROUND_Y + offY], [this.handX + lenEff, GROUND_Y + offY]], alpha, false);
+    },
+    ghost(){ ghostShape([[this.handX, GROUND_Y], [this.gapX2, GROUND_Y]], false); },
+    scene(isCur, ba){
+      ctx.fillStyle = '#3f3a33';
+      ctx.fillRect(this.gapX1, GROUND_Y, this.gapX2 - this.gapX1, VIEW_H - GROUND_Y + 60);
+      ctx.strokeStyle = '#8a7e68'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(this.gapX1, GROUND_Y); ctx.lineTo(this.gapX1, GROUND_Y + 12); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(this.gapX2, GROUND_Y); ctx.lineTo(this.gapX2, GROUND_Y + 12); ctx.stroke();
+      if (isCur) cueShape([[this.gapX2, GROUND_Y - 12], [this.gapX2, GROUND_Y + 14]], false, ba);
+    },
+  },
+  {
+    id:'fold', cls:'折线', name:'对折双股', shape:'fold',
+    triggerX:950, handX:962, handY:GROUND_Y-50,
+    initLen:40, maxLen:420, growSpeed:110,
+    anchorX:1012, topY:GROUND_Y-96, gapW:150, exitX:1250, introDuration:2.0,
+    judge:(len)=>len/2,                          // 有效跨度 = 总长/2
+    band:[132,168],                              // 跨度容差 [PLACEHOLDER]（±12%）
+    snap:()=>300,                                // 表现 snap 到正好跨过（判定宽松、画面正确）
+    introText:'桥面松了。把绳子对折成双股，撑过去。',
+    hintReady:'按住屏幕，让绳子从手中生长', hintFixed:'点击屏幕，把绳子对折成双股',
+    failShort:'双股太短，够不到…', failShortHint:'对折后只剩一半长，往长了给',
+    failLong:'太长了，双股松垮…', failLongHint:'对折后超出太多，松了',
+    renderShape(lenEff, alpha, offY){
+      const span = lenEff / 2, y = this.topY + offY, x = this.anchorX;
+      strokeShape([[x, y - 7], [x + span, y - 7]], alpha, false);
+      strokeShape([[x, y + 7], [x + span, y + 7]], alpha, false);
+    },
+    ghost(){ const y = this.topY, x = this.anchorX;
+      ghostShape([[x, y - 7], [x + this.gapW, y - 7]], false);
+      ghostShape([[x, y + 7], [x + this.gapW, y + 7]], false); },
+    scene(isCur, ba){
+      // 两个接触点（立柱）→ 折叠自明；虚线为目标跨度
+      ctx.fillStyle = '#7f7668';
+      ctx.fillRect(this.anchorX - 7, this.topY, 14, GROUND_Y - this.topY);
+      ctx.fillRect(this.anchorX + this.gapW - 7, this.topY, 14, GROUND_Y - this.topY);
+      ctx.fillStyle = '#5d5548';
+      ctx.fillRect(this.anchorX - 10, this.topY - 10, this.gapW + 20, 10);
+      if (isCur) cueShape([[this.anchorX, this.topY], [this.anchorX + this.gapW, this.topY]], false, ba);
+      ctx.fillStyle = 'rgba(70,60,45,.75)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('对折：总长 ÷2 = 跨度', this.anchorX + this.gapW / 2, this.topY - 16);
+    },
+  },
+  {
+    id:'lbrace', cls:'折线', name:'L 型顶撑', shape:'lbrace',
+    triggerX:1400, handX:1412, handY:GROUND_Y-60,
+    initLen:40, maxLen:320, growSpeed:110,
+    baseX:1462, armReq:90, platY:GROUND_Y-90, exitX:1700, introDuration:2.0,
+    judge:(len)=>len/2,                          // 等臂：单臂长
+    band:[78,102],                               // [PLACEHOLDER]（±13%）
+    snap:()=>180,
+    introText:'石头快塌了。折成直角，顶住它。',
+    hintReady:'按住屏幕，让绳子从手中生长', hintFixed:'点击屏幕，把绳子折成直角',
+    failShort:'太短，顶不到…', failShortHint:'竖向和横向都要够，两段加起来',
+    failLong:'太长，撑歪了…', failLongHint:'臂太长，顶歪了',
+    renderShape(lenEff, alpha, offY){
+      const a = lenEff / 2, x = this.baseX;
+      strokeShape([[x, GROUND_Y + offY], [x, GROUND_Y - a + offY], [x + a, GROUND_Y - a + offY]], alpha, false);
+    },
+    ghost(){ const a = this.armReq, x = this.baseX;
+      ghostShape([[x, GROUND_Y], [x, GROUND_Y - a], [x + a, GROUND_Y - a]], false); },
+    scene(isCur, ba){
+      // 两个接触点：地面 + 平台底面（夹角≠直线 → 拐角自明）
+      ctx.save();
+      const wob = Math.sin(performance.now() / 260) * 0.02;
+      ctx.translate(this.baseX + 150, this.platY - 8);
+      ctx.rotate(wob);
+      ctx.fillStyle = '#8d8676'; ctx.fillRect(-150, -14, 300, 14);
+      ctx.fillStyle = '#6f695c'; ctx.fillRect(-150, -14, 300, 4);
+      ctx.restore();
+      ctx.fillStyle = '#4a4438'; ctx.fillRect(this.baseX - 6, this.platY, 12, 8);
+      if (isCur) cueShape([[this.baseX, GROUND_Y], [this.baseX, GROUND_Y - this.armReq],
+        [this.baseX + this.armReq, GROUND_Y - this.armReq]], false, ba);
+      ctx.fillStyle = 'rgba(70,60,45,.75)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('两段：竖 + 横', this.baseX + this.armReq / 2, this.platY - 22);
+    },
+  },
+  {
+    id:'arch', cls:'曲线', name:'拱', shape:'arch',
+    triggerX:1850, handX:1862, handY:GROUND_Y-70,
+    initLen:40, maxLen:340, growSpeed:110,
+    bankL:1912, chord:160, arcReq:216, exitX:2150, introDuration:2.0,
+    judge:(len)=>len,                            // 判定标量 = 弧长本体
+    band:[183.6,243.8],                          // [PLACEHOLDER]（上界钉在略低于 πC/2≈251）
+    snap:()=>216,
+    introText:'小溪挡路。把绳子弯成拱，跨过去。',
+    hintReady:'按住屏幕，让绳子从手中生长', hintFixed:'点击屏幕，把绳子弯成拱',
+    failShort:'弧太短，塌下去了…', failShortHint:'沿曲线的长度比两岸直线距离长',
+    failLong:'弧太长，撑不住…', failLongHint:'拱得过头了',
+    renderShape(lenEff, alpha, offY){
+      strokeShape(arcPts(this.bankL, this.bankL + this.chord, GROUND_Y + offY, lenEff, 26), alpha, false);
+    },
+    ghost(){ ghostShape(arcPts(this.bankL, this.bankL + this.chord, GROUND_Y, this.arcReq, 26), false); },
+    scene(isCur, ba){
+      const R = this.bankL + this.chord;
+      ctx.fillStyle = '#5f88a8';                                  // 水（物理必然：直线会垂进水里）
+      ctx.fillRect(this.bankL, GROUND_Y + 4, this.chord, 26);
+      ctx.fillStyle = '#b5a68e';
+      ctx.fillRect(this.bankL - 46, GROUND_Y, 46, VIEW_H - GROUND_Y + 60);
+      ctx.fillRect(R, GROUND_Y, 46, VIEW_H - GROUND_Y + 60);
+      if (isCur) cueShape(arcPts(this.bankL, R, GROUND_Y, this.arcReq, 26), false, ba);
+      ctx.fillStyle = 'rgba(70,60,45,.75)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('弧比两岸直线长', (this.bankL + R) / 2, GROUND_Y + 48);
+    },
+  },
+  {
+    id:'circle', cls:'闭合', name:'圆围栏', shape:'circle',
+    triggerX:2300, handX:2312, handY:GROUND_Y-70,
+    initLen:40, maxLen:400, growSpeed:110,
+    targetCx:2440, targetR:45, exitX:2600, introDuration:2.2,
+    judge:(len)=>len/(2*Math.PI), band:[39.6,50.4],   // [PLACEHOLDER]
+    snap:(len)=>len,
+    introText:'画个圈，把小兔子围起来吧。',
+    hintReady:'按住屏幕，让绳子从手中生长', hintFixed:'点击屏幕，把绳子弯成圆围栏',
+    failShort:'圆太小，老虎扑进来了…', failShortHint:'围栏太小，小兔子露出来了',
+    failLong:'圆太大，老虎绕过去了…', failLongHint:'围栏太大，太松了',
+    renderShape(lenEff, alpha, offY){
+      const r = lenEff / (2 * Math.PI);
+      strokeShape(ellipsePts(this.targetCx, GROUND_Y + offY, r, r * 0.38, 44), alpha, true);
+    },
+    ghost(){ const r = 45; ghostShape(ellipsePts(this.targetCx, GROUND_Y, r, r * 0.38, 44), true); },
+    scene(isCur, ba){
+      ctx.save();
+      ctx.globalAlpha = isCur ? 1 : 0.5;
+      ctx.strokeStyle = `rgba(140,165,120,${isCur ? ba : 0.35})`;
+      ctx.lineWidth = 2.5; ctx.setLineDash([6, 7]);
+      ctx.beginPath(); ctx.ellipse(this.targetCx, GROUND_Y, this.targetR, this.targetR * 0.38, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+      drawTiger(tigerX, GROUND_Y, tigerState === 'stalking' ? tigerTimer * 6 : 0, tigerState);
+      drawRabbit(this.targetCx, GROUND_Y, rabbitScared);
+      if (isCur) cueShape(ellipsePts(this.targetCx, GROUND_Y, this.targetR, this.targetR * 0.38, 44), true, ba * 0.8);
+    },
+  },
+  {
+    id:'triangle', cls:'闭合', name:'三角围栏', shape:'triangle',
+    triggerX:2750, handX:2762, handY:GROUND_Y-75,
+    initLen:40, maxLen:360, growSpeed:110,
+    tcx:2890, sideReq:70, exitX:3050, introDuration:2.0,
+    judge:(len)=>len/3, band:[62.3,77.7],        // [PLACEHOLDER]（±11%）
+    snap:()=>210,
+    introText:'三根桩子。围成三角，把树苗护住。',
+    hintReady:'按住屏幕，让绳子从手中生长', hintFixed:'点击屏幕，把绳子围成三角',
+    failShort:'太小，围不住…', failShortHint:'三条边加起来才是一圈',
+    failLong:'太大，松垮…', failLongHint:'围得太松',
+    renderShape(lenEff, alpha, offY){
+      strokeShape(triPts(this.tcx, GROUND_Y + offY, lenEff / 3), alpha, true);
+    },
+    ghost(){ ghostShape(triPts(this.tcx, GROUND_Y, this.sideReq), true); },
+    scene(isCur, ba){
+      // 三个接触点（桩）→ 三角自明
+      const v = triPts(this.tcx, GROUND_Y, this.sideReq);
+      ctx.fillStyle = '#6d6455';
+      v.forEach(p => ctx.fillRect(p[0] - 3, p[1] - 16, 6, 16));
+      if (isCur) cueShape(v, true, ba);
+      ctx.fillStyle = 'rgba(70,60,45,.75)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('三边之和', this.tcx, GROUND_Y + 40);
+    },
+  },
+  {
+    id:'poly', cls:'闭合', name:'不规则围栏', shape:'poly',
+    triggerX:3200, handX:3212, handY:GROUND_Y-80,
+    initLen:40, maxLen:420, growSpeed:110,
+    pcx:3340, perimReq:260, exitX:3500, introDuration:2.0,
+    judge:(len)=>len, band:[223.6,296.4],        // [PLACEHOLDER]（±14%，不规则最宽）
+    snap:()=>260,
+    introText:'这块石头形状怪。照着边，围一圈。',
+    hintReady:'按住屏幕，让绳子从手中生长', hintFixed:'点击屏幕，把绳子围成一圈',
+    failShort:'不够长，缺口还在…', failShortHint:'每一段都要算进去',
+    failLong:'太长，绕出去了…', failLongHint:'围出去太多了',
+    renderShape(lenEff, alpha, offY){
+      strokeShape(polyPts(this.pcx, GROUND_Y + offY, lenEff), alpha, true);
+    },
+    ghost(){ ghostShape(polyPts(this.pcx, GROUND_Y, this.perimReq), true); },
+    scene(isCur, ba){
+      ctx.fillStyle = '#8d8676';
+      polyPts(this.pcx, GROUND_Y, this.perimReq).forEach(p => ctx.fillRect(p[0] - 3, p[1] - 14, 6, 14));
+      if (isCur) cueShape(polyPts(this.pcx, GROUND_Y, this.perimReq), true, ba);
+      ctx.fillStyle = 'rgba(70,60,45,.75)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('长短不一，全加起来', this.pcx, GROUND_Y + 42);
+    },
+  },
+  {
+    id:'door', cls:'闭合', name:'方门', shape:'square', finale:true,
+    triggerX:3650, handX:3662, handY:GROUND_Y-75,
+    initLen:40, maxLen:340, growSpeed:100,
+    doorX:3750, doorS:55, exitX:3900, introDuration:2.2,
+    judge:(len)=>len/4, band:[49.6,60.4],        // [PLACEHOLDER]
+    snap:()=>220,                                 // 成功 snap 到正好堵住门洞
+    introText:'画一扇方门，把缺口堵上吧。',
+    hintReady:'按住屏幕，让绳子从手中生长', hintFixed:'点击屏幕，把绳子折成方形门框',
+    failShort:'门框太小，掉下去了…', failShortHint:'门框太小，卡不住',
+    failLong:'门框太大，卡不进去…', failLongHint:'门框太大，卡不进门洞',
+    renderShape(lenEff, alpha, offY){
+      const A = lenEff / 4, cx = this.doorX + this.doorS / 2, cy = GROUND_Y - this.doorS / 2 + offY;
+      strokeShape(rectPts(cx, cy, A), alpha, true);
+    },
+    ghost(){ const s = this.doorS, cx = this.doorX + s / 2, cy = GROUND_Y - s / 2;
+      ghostShape(rectPts(cx, cy, s), true); },
+    scene(isCur, ba){
+      const doorTop = GROUND_Y - this.doorS;
+      const wallLeft = this.doorX - 30, wallRight = this.doorX + this.doorS + 30, wallTop = GROUND_Y - 140;
+      const lg = ctx.createLinearGradient(0, doorTop, 0, GROUND_Y);
+      lg.addColorStop(0, 'rgba(255,248,210,0.95)'); lg.addColorStop(1, 'rgba(255,235,170,0.7)');
+      ctx.fillStyle = lg; ctx.fillRect(this.doorX, doorTop, this.doorS, this.doorS);
+      ctx.fillStyle = '#8a8578';
+      ctx.fillRect(wallLeft, wallTop, this.doorX - wallLeft, GROUND_Y - wallTop);
+      ctx.fillRect(this.doorX + this.doorS, wallTop, wallRight - (this.doorX + this.doorS), GROUND_Y - wallTop);
+      ctx.fillRect(this.doorX, wallTop, this.doorS, doorTop - wallTop);
+      ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(this.doorX, doorTop, this.doorS, 8);
+      ctx.fillStyle = '#7f9a74';
+      ctx.beginPath(); ctx.arc(wallLeft + 12, wallTop + 2, 10, Math.PI, 0); ctx.fill();
+      ctx.beginPath(); ctx.arc(wallRight - 12, wallTop + 2, 10, Math.PI, 0); ctx.fill();
+      if (isCur) cueShape(rectPts(this.doorX + this.doorS / 2, GROUND_Y - this.doorS / 2, this.doorS + 4), true, ba);
+    },
+  },
+];
+
+// ===== 状态 =====
+let phase = 'intro';
+let phaseTimer = 0, charX = 120, charAlpha = 1, cameraX = 0;
+let levelIndex = -1, currentLevel = null, ropeLen = 0, failMsg = '';
+let transformT = 0, successT = 0, successWalkStarted = false;
+let walkTargetX = null, walkOnArrive = null, completedShapes = [];
+let textTimer = 0, blinkTimer = 0, enterT = 0, fadeT = 0, endingT = 0;
+let tigerX = 0, tigerBaseX = 0, tigerTimer = 0, tigerState = 'stalking', rabbitScared = false;
+let shakeT = 0;                       // T9 屏震
+let levelStartWall = 0;               // T8 单关计时
+
+// ===== 进度存档（T10）=====
+const SAVE_KEY = 'sr_progress_v1';
+function loadProgress(){
+  try { return JSON.parse(localStorage.getItem(SAVE_KEY)) || null; } catch(e){ return null; }
+}
+function saveProgress(){
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      levelIndex: Math.max(0, levelIndex + 1),
+      completed: completedShapes.map(s => s.level.id),
+      ts: Date.now(),
+    }));
+  } catch(e){}
+}
+function clearProgress(){ try { localStorage.removeItem(SAVE_KEY); } catch(e){} }
+function rebuildCompleted(uptoIdx){
+  completedShapes = [];
+  for (let i = 0; i < uptoIdx && i < LEVELS.length; i++) {
+    const L = LEVELS[i];
+    completedShapes.push({ level: L, len: L.snap(L.band ? (L.band[0] + L.band[1]) / 2 * (L.judge ? 1 : 1) : 0) });
+  }
+}
+
+// ===== playtest 仪表（T8）=====
+const metrics = {};
+function metricFor(L){
+  return metrics[L.id] || (metrics[L.id] = { id:L.id, cls:L.cls, name:L.name,
+    attempts:0, passes:0, fails:0, consec:0, maxConsec:0, firstTryPass:null, durations:[] });
+}
+function report(){
+  const rows = Object.keys(metrics).map(k => {
+    const m = metrics[k];
+    return { id:m.id, cls:m.cls, name:m.name, attempts:m.attempts, passes:m.passes,
+      passRate: m.attempts ? +(m.passes / m.attempts).toFixed(2) : null,
+      maxConsec:m.maxConsec, firstTryPass:m.firstTryPass,
+      avgSec: m.durations.length ? +(m.durations.reduce((a,b)=>a+b,0)/m.durations.length).toFixed(1) : null };
+  });
+  const A = rows.filter(r => r.maxConsec >= 3);                       // A：连续3次失败仍不懂
+  const B = rows.filter(r => r.id === LEVELS[0].id && r.passRate !== null && r.passRate > 0.9); // B：首关无挑战
+  const C = rows.filter(r => r.id === LEVELS[LEVELS.length-1].id && r.attempts >= 3 && r.passRate < 0.4); // C：终关劝退
+  return { rows, signals:{
+    A_feedbackBroken: A.length > 0, B_tooEasy: B.length > 0, C_tooHard: C.length > 0 },
+    sigmaP_note: '容差为 [PLACEHOLDER·待 σp 实测验证]，实机数据可反向校准' };
+}
+function exportJson(){
+  const blob = new Blob([JSON.stringify(report(), null, 2)], { type:'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'sense_ruler_playtest.json'; a.click(); URL.revokeObjectURL(a.href);
+}
+
+// ===== 音效 / 触感（T9）=====
+let actx = null;
+function tone(freq, dur, type, gain){
+  try {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type || 'sine'; o.frequency.value = freq;
+    g.gain.setValueAtTime(0, actx.currentTime);
+    g.gain.linearRampToValueAtTime(gain || 0.12, actx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + dur);
+    o.connect(g); g.connect(actx.destination);
+    o.start(); o.stop(actx.currentTime + dur + 0.05);
+  } catch(e){}
+}
+function sfxSuccess(){ tone(660, 0.16, 'sine', 0.10); setTimeout(()=>tone(880, 0.22, 'sine', 0.09), 110); }
+function sfxFail(){ tone(150, 0.18, 'sawtooth', 0.10); }
+function haptic(pattern){ try { navigator.vibrate && navigator.vibrate(pattern); } catch(e){} }
+
+function setHint(t){ const v = t || ''; if (hintEl.textContent !== v) hintEl.textContent = v; hintEl.style.opacity = v ? '1' : '0'; }
+function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
+function easeInOutCubic(t){ return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2; }
+function updateCamera(dt){ const target = Math.max(0, Math.min(WORLD_W - VIEW_W, charX - 300)); cameraX += (target - cameraX) * Math.min(1, dt * 5); }
+function startWalking(targetX, onArrive){ walkTargetX = targetX; walkOnArrive = onArrive; phase = 'walking'; }
+
+function startLevel(i){
+  levelIndex = i; currentLevel = LEVELS[i];
+  setHint(''); textTimer = 0; blinkTimer = 0;
+  successWalkStarted = false; failMsg = ''; shakeT = 0;
+  if (currentLevel.id === 'circle') { tigerBaseX = currentLevel.targetCx + 180; tigerX = tigerBaseX; tigerState = 'stalking'; tigerTimer = 0; rabbitScared = true; }
+  startWalking(currentLevel.triggerX, () => { phase = 'level_intro'; phaseTimer = 0; });
+}
+function startEnding(){ startWalking(WORLD_W - 400, () => { phase = 'done'; phaseTimer = 0; setHint(''); console.log('[SenseRuler] playtest report', report()); }); }
+function resetGame(keepSave){
+  phase = 'intro'; phaseTimer = 0; charX = 120; charAlpha = 1; cameraX = 0;
+  levelIndex = -1; currentLevel = null; ropeLen = 0; failMsg = '';
+  transformT = 0; successT = 0; successWalkStarted = false;
+  walkTargetX = null; walkOnArrive = null; completedShapes = [];
+  textTimer = 0; blinkTimer = 0; enterT = 0; fadeT = 0; endingT = 0; shakeT = 0;
+  tigerState = 'stalking'; tigerTimer = 0;
+  if (!keepSave) clearProgress();
+  setHint('');
+}
+
+// ===== 输入 =====
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (phase === 'ending' || phase === 'done') { resetGame(true); return; }
+  if (phase === 'ready') { phase = 'growing'; setHint(''); }
+  else if (phase === 'fixed') { phase = 'transforming'; transformT = 0; setHint(''); }
+});
+function release(){ if (phase === 'growing') { phase = 'fixed'; setHint(currentLevel.hintFixed); } }
+canvas.addEventListener('pointerup', e => { e.preventDefault(); release(); });
+canvas.addEventListener('pointercancel', e => { e.preventDefault(); release(); });
+canvas.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') release(); });
+
+// ===== 判定（统一走 judge/band）=====
+function evaluate(){
+  const L = currentLevel, m = metricFor(L);
+  m.attempts++;
+  const eff = L.judge(ropeLen);
+  if (eff < L.band[0]) return onFail(L.failShort, L.failShortHint);
+  if (eff > L.band[1]) return onFail(L.failLong, L.failLongHint);
+  return onSuccess();
+}
+function onSuccess(){
+  const L = currentLevel, m = metricFor(L);
+  m.passes++; m.consec = 0;
+  if (m.attempts === 1) m.firstTryPass = true;
+  m.durations.push((performance.now() - levelStartWall) / 1000);
+  completedShapes.push({ level: L, len: L.snap(ropeLen) });   // P5：表现 snap 到理想形状
+  saveProgress();                                            // T10：进度落盘
+  phase = 'success'; successT = 0; successWalkStarted = false;
+  setHint(''); sfxSuccess(); haptic(28);
+  if (L.id === 'circle') { tigerState = 'repelled'; tigerTimer = 0; }
+}
+function onFail(msg, hint){
+  const L = currentLevel, m = metricFor(L);
+  m.fails++; m.consec++; m.maxConsec = Math.max(m.maxConsec, m.consec);
+  phase = 'fail'; phaseTimer = 0; failMsg = msg; setHint(hint);
+  shakeT = 0.28; sfxFail(); haptic(60);                       // T9：屏震 + 音效 + 触感
+  if (L.id === 'circle') { tigerState = 'pouncing'; tigerTimer = 0; rabbitScared = true; }
+}
+
+// ===== 更新 =====
+let last = performance.now();
+function update(now){
+  const dt = Math.min((now - last) / 1000, 0.05); last = now;
+  updateCamera(dt);
+  const activeLevelPhases = ['level_intro','ready','growing','fixed','transforming','success','fail','entering'];
+  if (currentLevel && activeLevelPhases.includes(phase)) { textTimer += dt; blinkTimer += dt; }
+  if (shakeT > 0) shakeT = Math.max(0, shakeT - dt);
+  updateTiger(dt);
+
+  if (phase === 'intro'){ phaseTimer += dt; if (phaseTimer > 1.6) { const p = loadProgress(); if (p && p.levelIndex > 0 && p.levelIndex < LEVELS.length) { rebuildCompleted(p.levelIndex); startLevel(p.levelIndex); } else startLevel(0); } return; }
+  if (phase === 'walking'){
+    if (walkTargetX !== null && charX < walkTargetX){
+      charX = Math.min(walkTargetX, charX + 200 * dt);
+      if (charX >= walkTargetX){ const cb = walkOnArrive; walkOnArrive = null; walkTargetX = null; if (cb) cb(); }
+    } return;
+  }
+  if (phase === 'level_intro'){
+    phaseTimer += dt;
+    if (phaseTimer >= currentLevel.introDuration){ ropeLen = currentLevel.initLen; phase = 'ready'; setHint(currentLevel.hintReady); levelStartWall = performance.now(); }
+    return;
+  }
+  if (phase === 'growing'){ ropeLen = Math.min(currentLevel.maxLen, ropeLen + currentLevel.growSpeed * dt); return; }
+  if (phase === 'transforming'){ transformT += dt / 0.45; if (transformT >= 1){ transformT = 1; evaluate(); } return; }
+  if (phase === 'success'){
+    successT += dt;
+    if (!successWalkStarted && successT > 0.6){
+      successWalkStarted = true;
+      if (currentLevel.finale){ startWalking(currentLevel.doorX - 18, () => { phase = 'entering'; enterT = 0; }); }
+      else startWalking(currentLevel.exitX, () => { if (levelIndex + 1 < LEVELS.length) startLevel(levelIndex + 1); else startEnding(); });
+    } return;
+  }
+  if (phase === 'entering'){
+    enterT += dt / 0.8;
+    const t = easeInOutCubic(Math.min(enterT, 1));
+    charX = (currentLevel.doorX - 18) + (currentLevel.doorS / 2 + 18) * t;
+    charAlpha = 1 - t;
+    if (enterT >= 1){ charAlpha = 0; phase = 'fadeout'; fadeT = 0; }
+    return;
+  }
+  if (phase === 'fadeout'){ fadeT += dt / 0.8; if (fadeT >= 1){ phase = 'ending'; endingT = 0; setHint(''); clearProgress(); } return; }
+  if (phase === 'ending'){ endingT += dt; return; }
+  if (phase === 'done') return;
+  if (phase === 'fail'){
+    phaseTimer += dt;
+    if (phaseTimer > 1.5){                        // T9：重试零成本（≤1.5s，且不重播过场）
+      ropeLen = currentLevel.initLen; failMsg = ''; phase = 'ready';
+      setHint(currentLevel.hintReady); levelStartWall = performance.now();
+      if (currentLevel.id === 'circle'){ tigerState = 'stalking'; tigerTimer = 0; }
+    } return;
+  }
+}
+function updateTiger(dt){
+  if (!currentLevel || currentLevel.id !== 'circle') return;
+  tigerTimer += dt;
+  if (tigerState === 'stalking') tigerX = tigerBaseX + Math.sin(tigerTimer * 1.2) * 15;
+  else if (tigerState === 'pouncing') { const t = Math.min(tigerTimer / 0.35, 1); tigerX = tigerBaseX - 140 * easeOutCubic(t); }
+  else if (tigerState === 'repelled') { const t = Math.min(tigerTimer / 0.5, 1); tigerX = tigerBaseX + 50 * t; }
+}
+
+// ===== 绘制 =====
+function getBlinkAlpha(){ if (blinkTimer < 1.5) return 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(blinkTimer * Math.PI * 8 / 3 - Math.PI / 2)); return 0.4; }
+
+function draw(){
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(offsetX, offsetY); ctx.scale(scale, scale);
+  if (shakeT > 0){ const a = shakeT * 14; ctx.translate((Math.random()-0.5)*a, (Math.random()-0.5)*a); }
+
+  if (phase === 'ending'){ drawEnding(); ctx.restore(); return; }
+  drawSky();
+  drawTrees(0.25, '#cdd8c6', 150, 100, 11);
+  drawTrees(0.5, '#a9bfa2', 190, 130, 23);
+  drawTrees(0.8, '#86a07e', 240, 160, 37);
+  ctx.save(); ctx.translate(-cameraX, 0);
+  drawGround(); drawLevelElements(); drawRopeShape(); drawCharacter();
+  ctx.restore();
+  drawLevelText(); drawMessage();
+  if (phase === 'fadeout'){ ctx.fillStyle = `rgba(20,18,15,${Math.min(fadeT,1)})`; ctx.fillRect(0,0,VIEW_W,VIEW_H); }
+  ctx.restore();
+}
+function drawSky(){ const g = ctx.createLinearGradient(0,0,0,GROUND_Y); g.addColorStop(0,'#eef3e8'); g.addColorStop(1,'#dce6d2'); ctx.fillStyle = g; ctx.fillRect(0,0,VIEW_W,GROUND_Y); }
+function drawTrees(parallax, color, spacing, baseH, seed){
+  const offset = cameraX * parallax;
+  const startI = Math.floor(offset / spacing) - 1, endI = Math.ceil((offset + VIEW_W) / spacing) + 1;
+  ctx.fillStyle = color;
+  for (let i = startI; i <= endI; i++){
+    const wx = i * spacing + ((i * 73 + seed) % 70) - 35;
+    drawTreeShape(wx - offset, GROUND_Y, baseH + ((i * 137 + seed) % 60) - 30);
+  }
+}
+function drawTreeShape(x, baseY, h){
+  const trunkW = Math.max(4, h * 0.07);
+  ctx.fillRect(x - trunkW/2, baseY - h*0.42, trunkW, h*0.42);
+  const cy = baseY - h*0.42 - h*0.25, r1 = h*0.3, r2 = h*0.22;
+  ctx.beginPath(); ctx.arc(x, cy, r1, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x - r1*0.7, cy + r1*0.35, r2, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + r1*0.7, cy + r1*0.35, r2, 0, Math.PI*2); ctx.fill();
+}
+function drawGround(){
+  const startX = cameraX - 60, endX = cameraX + VIEW_W + 60;
+  ctx.fillStyle = '#b5a68e'; ctx.fillRect(startX, GROUND_Y, endX - startX, VIEW_H - GROUND_Y + 60);
+  ctx.strokeStyle = '#9c8d75'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(startX, GROUND_Y); ctx.lineTo(endX, GROUND_Y); ctx.stroke();
+}
+function drawLevelElements(){
+  for (const L of LEVELS){
+    if (!L.scene) continue;
+    const isCur = (currentLevel === L);
+    const active = ['level_intro','ready','growing','fixed','transforming','fail'].includes(phase);
+    L.scene(isCur && active ? getBlinkAlpha() : 0.35, isCur && active ? getBlinkAlpha() : 0.35);
+  }
+}
+function drawRopeShape(){
+  for (const s of completedShapes) s.level.renderShape(s.len, 1, 0, 1);
+  if (!currentLevel) return;
+  if (['intro','walking','level_intro','done','entering','fadeout'].includes(phase)) return;
+  if (['ready','growing','fixed'].includes(phase)){ drawVerticalRope(currentLevel.handX, currentLevel.handY, ropeLen, 1); return; }
+  if (phase === 'transforming'){
+    const t = easeOutCubic(transformT);
+    drawVerticalRope(currentLevel.handX, currentLevel.handY, ropeLen, 1 - t);
+    if (currentLevel.id !== 'gap') currentLevel.renderShape(ropeLen * t, t, 0, null);
+    else currentLevel.renderShape(ropeLen, 1, 0, t);
+    return;
+  }
+  if (phase === 'success') return;
+  if (phase === 'fail'){
+    const ft = Math.min(phaseTimer / 0.7, 1);
+    currentLevel.renderShape(ropeLen, 1 - ft * 0.9, ft * 55, 1);
+    currentLevel.ghost();       // P2/P3：失败给相对信息（正确形状并排对比），不给数值
+  }
+}
+function drawVerticalRope(x, y, len, alpha){
+  if (len <= 0 || alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 10;
+  ctx.beginPath(); ctx.moveTo(x+2, y+2); ctx.lineTo(x+2, y-len+2); ctx.stroke();
+  ctx.strokeStyle = ROPE_C; ctx.lineWidth = 7;
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y-len); ctx.stroke();
+  ctx.strokeStyle = ROPE_H; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.moveTo(x-1.5, y); ctx.lineTo(x-1.5, y-len); ctx.stroke();
+  ctx.fillStyle = ROPE_C; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawTiger(x, baseY, walkPhase, state){
+  ctx.save(); ctx.translate(x, baseY);
+  ctx.strokeStyle = '#e08a3c'; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(32,-28); ctx.quadraticCurveTo(52,-40,50,-16); ctx.stroke();
+  ctx.fillStyle = '#e08a3c'; ctx.beginPath(); ctx.ellipse(0,-22,34,20,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#c97a30';
+  const sw = state === 'stalking' ? Math.sin(walkPhase)*4 : 0;
+  ctx.fillRect(-24+sw,-8,8,20); ctx.fillRect(-10-sw,-8,8,20); ctx.fillRect(8+sw,-8,8,20); ctx.fillRect(20-sw,-8,8,20);
+  ctx.fillStyle = '#e89a45'; ctx.beginPath(); ctx.arc(-36,-36,18,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-42,-52); ctx.lineTo(-48,-64); ctx.lineTo(-34,-52); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(-28,-52); ctx.lineTo(-22,-62); ctx.lineTo(-20,-50); ctx.fill();
+  ctx.strokeStyle = '#3a2818'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-12,-38); ctx.lineTo(-8,-32); ctx.moveTo(0,-40); ctx.lineTo(4,-32); ctx.moveTo(12,-38); ctx.lineTo(16,-30); ctx.stroke();
+  ctx.fillStyle = '#3a2818';
+  ctx.beginPath(); ctx.arc(-42,-38,2.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(-30,-38,2.5,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#3a2818'; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(-50,-32); ctx.lineTo(-58,-30); ctx.moveTo(-50,-34); ctx.lineTo(-58,-36); ctx.stroke();
+  ctx.restore();
+}
+function drawRabbit(x, baseY, scared){
+  ctx.save(); ctx.translate(x, baseY);
+  const tr = scared ? Math.sin(performance.now()/70)*1.2 : 0;
+  ctx.fillStyle = '#f0ece0';
+  ctx.beginPath(); ctx.ellipse(0,-14+tr,14,12,0,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(10,-22+tr,9,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(8,-38+tr,3,9,-0.2,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(14,-38+tr,3,9,0.1,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(-13,-10+tr,4,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#3a2818'; ctx.beginPath(); ctx.arc(13,-23+tr,1.6,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#d98a8a'; ctx.beginPath(); ctx.arc(19,-20+tr,1.4,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+function drawCharacter(){
+  if (charAlpha <= 0) return;
+  const x = charX;
+  const walking = ['walking','intro','success','entering'].includes(phase);
+  const bob = walking ? Math.abs(Math.sin(performance.now()/130))*3 : 0;
+  const bodyY = GROUND_Y - 32 + bob;
+  ctx.save(); ctx.globalAlpha = charAlpha; ctx.fillStyle = '#3a3a30';
+  ctx.beginPath(); ctx.arc(x, bodyY-28, 9, 0, Math.PI*2); ctx.fill();
+  ctx.fillRect(x-6, bodyY-18, 12, 26);
+  const legSwing = walking ? Math.sin(performance.now()/130)*6 : 0;
+  ctx.fillRect(x-7+legSwing, bodyY+8, 5, 26); ctx.fillRect(x+2-legSwing, bodyY+8, 5, 26);
+  ctx.strokeStyle = '#3a3a30'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  ctx.beginPath();
+  if (currentLevel && ['ready','growing','fixed'].includes(phase)){ ctx.moveTo(x, bodyY-10); ctx.lineTo(currentLevel.handX, currentLevel.handY); }
+  else { const armSwing = walking ? Math.sin(performance.now()/130)*6 : 2; ctx.moveTo(x, bodyY-10); ctx.lineTo(x+8, bodyY+10+armSwing); }
+  ctx.stroke(); ctx.restore();
+}
+function drawLevelText(){
+  if (!currentLevel || !currentLevel.introText) return;
+  if (textTimer >= 3.0) return;
+  const alpha = textTimer < 2.2 ? 1 : Math.max(0, (3.0 - textTimer)/0.8);
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.font = '600 28px -apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const tw = ctx.measureText(currentLevel.introText).width, bx = VIEW_W/2, by = 96;
+  ctx.fillStyle = 'rgba(255,255,255,0.82)'; ctx.fillRect(bx - tw/2 - 22, by - 26, tw + 44, 52);
+  ctx.fillStyle = '#3a3a30'; ctx.fillText(currentLevel.introText, bx, by);
+  ctx.restore();
+}
+function drawMessage(){
+  if (!failMsg) return;
+  ctx.save();
+  ctx.fillStyle = 'rgba(55,50,40,0.88)';
+  ctx.font = '600 26px -apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'center'; ctx.fillText(failMsg, VIEW_W/2, 160);
+  ctx.restore();
+}
+function drawEnding(){
+  const g = ctx.createLinearGradient(0,0,0,GROUND_Y); g.addColorStop(0,'#cfe3f5'); g.addColorStop(1,'#e8f0e0');
+  ctx.fillStyle = g; ctx.fillRect(0,0,VIEW_W,GROUND_Y);
+  ctx.fillStyle = '#a8c890'; ctx.fillRect(0,GROUND_Y-20,VIEW_W,VIEW_H-GROUND_Y+20);
+  ctx.fillStyle = '#6a8a60'; ctx.fillRect(0,GROUND_Y-170,180,150);
+  for (let i=0;i<4;i++){ ctx.beginPath(); ctx.arc(20+i*45, GROUND_Y-170, 26, 0, Math.PI*2); ctx.fill(); }
+  const cx = VIEW_W/2 + 40, cy = GROUND_Y - 20;
+  ctx.save(); ctx.fillStyle = '#3a3a30';
+  ctx.beginPath(); ctx.arc(cx, cy-52, 9, 0, Math.PI*2); ctx.fill();
+  ctx.fillRect(cx-6, cy-42, 12, 26); ctx.fillRect(cx-7, cy-16, 5, 16); ctx.fillRect(cx+2, cy-16, 5, 16);
+  ctx.strokeStyle = '#3a3a30'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(cx, cy-34); ctx.lineTo(cx+12, cy-22); ctx.stroke();
+  ctx.strokeStyle = ROPE_C; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(cx+12, cy-22); ctx.quadraticCurveTo(cx+18, cy-14, cx+16, cy-6); ctx.stroke();
+  ctx.restore();
+  ctx.fillStyle = 'rgba(60,60,50,0.88)';
+  ctx.font = '600 28px -apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.textAlign = 'center'; ctx.fillText('走出森林了。', VIEW_W/2, 130);
+  ctx.font = '400 18px -apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillStyle = 'rgba(60,60,50,0.65)'; ctx.fillText('点击屏幕重新开始', VIEW_W/2, 172);
+}
+
+// ===== 选关 / 数据面板（T10）=====
+const panel = document.getElementById('panel');
+function unlockedMax(){
+  const p = loadProgress();
+  return p ? Math.min(p.levelIndex, LEVELS.length - 1) : 0;
+}
+function openPanel(mode){
+  panel.style.display = 'flex';
+  const grid = document.getElementById('pGrid');
+  grid.innerHTML = '';
+  if (mode === 'levels'){
+    document.getElementById('pTitle').textContent = '选关';
+    document.getElementById('pSub').textContent = '已解锁的关卡（进度自动保存在本机）';
+    const mx = unlockedMax();
+    LEVELS.forEach((L, i) => {
+      const b = document.createElement('button');
+      b.className = 'lv'; b.disabled = i > mx;
+      b.innerHTML = `<span class="t">${i+1}. ${L.name}</span><span class="c">${L.cls} · ${L.shape}</span>`;
+      b.onclick = () => { panel.style.display = 'none'; resetGame(true); rebuildCompleted(i); startLevel(i); };
+      grid.appendChild(b);
+    });
+  } else {
+    document.getElementById('pTitle').textContent = 'Playtest 数据';
+    document.getElementById('pSub').textContent = 'A/B/C 失败信号：连续3次失败 / 首关太易 / 终关劝退';
+    const r = report();
+    const box = document.createElement('div');
+    box.style.cssText = 'font:12px/1.7 ui-monospace,Menlo,monospace;white-space:pre-wrap;color:#3a3a30';
+    box.textContent = JSON.stringify(r, null, 2);
+    grid.appendChild(box);
+  }
+}
+document.getElementById('btnLevels').onclick = () => openPanel('levels');
+document.getElementById('btnData').onclick = () => openPanel('data');
+document.getElementById('pClose').onclick = () => { panel.style.display = 'none'; };
+document.getElementById('pReset').onclick = () => { clearProgress(); panel.style.display = 'none'; resetGame(false); };
+
+// ===== 调试探针（供回归脚本驱动，T1）=====
+window.__dbg = {
+  get phase(){ return phase; }, get levelIndex(){ return levelIndex; }, get ropeLen(){ return ropeLen; },
+  get level(){ return currentLevel; }, get charX(){ return charX; },
+  get levels(){ return LEVELS; }, get completed(){ return completedShapes.length; },
+  get failMsg(){ return failMsg; }, get metrics(){ return metrics; }, report,
+  jump(i){ resetGame(true); rebuildCompleted(i);
+    charX = LEVELS[i].triggerX - 30; cameraX = Math.max(0, charX - 300); startLevel(i); },
+  clearSave(){ clearProgress(); },
+};
+
+function loop(now){ update(now); draw(); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
