@@ -76,48 +76,85 @@ resize();
 
 // ===== 形状类型系统（T2）：每个形状 = judge(判定标量) + band(容差) + snap(表现) + renderShape + ghost =====
 // 所有容差均为 [PLACEHOLDER · 待 σp 实测验证]
-const ROPE_C = '#c96f2e', ROPE_H = '#e89a55';
+// ===== §2 统一调色板（V1/V2 落地：替换散落硬编码 hex）=====
+const PAL = {
+  skyTop:'#eef3e8', skyBot:'#dce6d2',                                   // 天空雾绿（远→近）
+  treeFar:'#cdd8c6', treeMid:'#a9bfa2', treeNear:'#86a07e',             // 远/中/近树剪影
+  ground:'#b8a98f', groundTop:'#c9bca0',                                // 地面暖土带 + 顶边高光
+  pit:'#3f3a33',                                                        // 坑/深渊（负空间）
+  obstacle:'#3a352c', obstacleTop:'#4a4438',                            // 障碍/立柱/桩 + 顶面受光
+  wall:'#8a8578', doorWarm1:'#fff8d2', doorWarm2:'#ffebaa',            // 门墙 + 暖光门（保留既有渐变调性）
+  bush:'#7f9a74', water:'#5f88a8', ringRGB:'140,165,120',               // 灌木 / 水 / 圈环(rgb)
+};
+const ROPE_C = '#e2712c', ROPE_H = '#f0a85c';   // V2 提对比（全画面唯一暖焦点，主理人锁定）
+const ROPE_SHADOW = 'rgba(40,25,10,0.18)';        // V2 绳柔和投影层（偏移 2,2）
+const GHOST_C = '#4a90c2';                        // V2 鬼影冷蓝（实色 + alpha）
+const CUE_C = '#f2c14e';                          // V2 场景 cue 暖琥珀（与鬼影严格色相分离）
 
-function strokeShape(pts, alpha, closeIt) {
+function strokeShape(pts, alpha, closeIt) {   // V2：主描边加宽 + 提对比 + 柔和投影层（仅特效，几何点集不变）
   if (alpha <= 0 || pts.length < 2) return;
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-  const doPath = (dy) => {
+  const doPath = (dx, dy) => {
     ctx.beginPath();
-    ctx.moveTo(pts[0][0], pts[0][1] + dy);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1] + dy);
+    ctx.moveTo(pts[0][0] + dx, pts[0][1] + dy);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0] + dx, pts[i][1] + dy);
     if (closeIt) ctx.closePath();
   };
-  ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 10; doPath(2); ctx.stroke();
-  ctx.strokeStyle = ROPE_C; ctx.lineWidth = 7; doPath(0); ctx.stroke();
-  ctx.strokeStyle = ROPE_H; ctx.lineWidth = 2.5; doPath(-1.5); ctx.stroke();
+  ctx.strokeStyle = ROPE_SHADOW; ctx.lineWidth = 12; doPath(2, 2); ctx.stroke();     // 柔和投影层（偏移 2,2）
+  ctx.strokeStyle = ROPE_C; ctx.lineWidth = 9; doPath(0, 0); ctx.stroke();            // 主描边（唯一暖焦点）
+  ctx.strokeStyle = ROPE_H; ctx.lineWidth = 2.5; doPath(-1.2, -1.2); ctx.stroke();   // 高光
   ctx.restore();
 }
-function ghostShape(pts, closeIt) {   // 正确形状鬼影（P2：只给相对/位置信息，不给数值）
+function ghostShape(pts, closeIt) {   // 正确形状鬼影（P2：只给相对/位置，绝不显示数值/刻度）
   if (pts.length < 2) return;
   ctx.save();
-  ctx.globalAlpha = 0.75;
-  ctx.strokeStyle = 'rgba(90,150,200,0.95)';
+  ctx.globalAlpha = 0.8;
+  ctx.strokeStyle = GHOST_C;
   ctx.lineWidth = 5; ctx.setLineDash([10, 8]); ctx.lineJoin = 'round'; ctx.lineCap = 'round';
   ctx.beginPath();
   ctx.moveTo(pts[0][0], pts[0][1]);
   for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
   if (closeIt) ctx.closePath();
   ctx.stroke();
+  // 端点接触标记（P3：接触点=折点/闭合顶点）— 小实心圆 r=3，无数值
+  ctx.setLineDash([]);
+  ctx.fillStyle = GHOST_C;
+  const marks = closeIt ? pts : [pts[0], pts[pts.length - 1]];
+  for (const p of marks) { ctx.beginPath(); ctx.arc(p[0], p[1], 3, 0, Math.PI * 2); ctx.fill(); }
   ctx.restore();
 }
-function cueShape(pts, closeIt, alpha) { // 场景目标提示（虚线，呼吸闪烁）
+function cueShape(pts, closeIt, alpha) { // V2 场景目标提示（暖琥珀，与鬼影冷蓝严格色相分离；呼吸 0.4–0.9）
   if (pts.length < 2) return;
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.strokeStyle = `rgba(255,205,90,${alpha})`;
+  ctx.strokeStyle = CUE_C;
   ctx.lineWidth = 4; ctx.setLineDash([8, 7]); ctx.lineJoin = 'round';
   ctx.beginPath();
   ctx.moveTo(pts[0][0], pts[0][1]);
   for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
   if (closeIt) ctx.closePath();
   ctx.stroke();
+  ctx.restore();
+}
+// 圆角矩形路径（柱/桩/横梁/土丘剪影，V1 有机化）— 仅构建路径，调用方自行 fill/stroke
+function barShape(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+// L3 场景 flavor（V1 去公式后降级：轻灰 11px、非必要通道）
+function drawFlavor(text, x, y) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(70,60,45,0.5)';
+  ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(text, x, y);
   ctx.restore();
 }
 function ellipsePts(cx, cy, rx, ry, n) {
@@ -185,11 +222,14 @@ const LEVELS = [
     },
     ghost(){ ghostShape([[this.handX, GROUND_Y], [this.gapX2, GROUND_Y]], false); },
     scene(isCur, ba){
-      ctx.fillStyle = '#3f3a33';
+      // 深渊（负空间）：统一暗色调，去除碎边
+      ctx.fillStyle = PAL.pit;
       ctx.fillRect(this.gapX1, GROUND_Y, this.gapX2 - this.gapX1, VIEW_H - GROUND_Y + 60);
-      ctx.strokeStyle = '#8a7e68'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(this.gapX1, GROUND_Y); ctx.lineTo(this.gapX1, GROUND_Y + 12); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(this.gapX2, GROUND_Y); ctx.lineTo(this.gapX2, GROUND_Y + 12); ctx.stroke();
+      // 两侧崖顶接触点（圆角岩台 + 顶面受光）— P3 锐利可读
+      for (const gx of [this.gapX1, this.gapX2]) {
+        ctx.fillStyle = PAL.obstacle; barShape(gx - 6, GROUND_Y - 5, 12, 16, 4); ctx.fill();
+        ctx.fillStyle = PAL.obstacleTop; ctx.fillRect(gx - 6, GROUND_Y - 5, 12, 3);
+      }
       if (isCur) cueShape([[this.gapX2, GROUND_Y - 12], [this.gapX2, GROUND_Y + 14]], false, ba);
     },
   },
@@ -215,14 +255,17 @@ const LEVELS = [
       ghostShape([[x, y + 7], [x + this.gapW, y + 7]], false); },
     scene(isCur, ba){
       // 两个接触点（立柱）→ 折叠自明；虚线为目标跨度
-      ctx.fillStyle = '#7f7668';
-      ctx.fillRect(this.anchorX - 7, this.topY, 14, GROUND_Y - this.topY);
-      ctx.fillRect(this.anchorX + this.gapW - 7, this.topY, 14, GROUND_Y - this.topY);
-      ctx.fillStyle = '#5d5548';
-      ctx.fillRect(this.anchorX - 10, this.topY - 10, this.gapW + 20, 10);
-      if (isCur) cueShape([[this.anchorX, this.topY], [this.anchorX + this.gapW, this.topY]], false, ba);
-      ctx.fillStyle = 'rgba(70,60,45,.75)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('对折：总长 ÷2 = 跨度', this.anchorX + this.gapW / 2, this.topY - 16);
+      const x0 = this.anchorX, x1 = this.anchorX + this.gapW, top = this.topY;
+      // 横梁（连接两柱，顶面受光）
+      ctx.fillStyle = PAL.obstacle; barShape(x0 - 12, top - 12, (x1 - x0) + 24, 14, 4); ctx.fill();
+      ctx.fillStyle = PAL.obstacleTop; ctx.fillRect(x0 - 12, top - 12, (x1 - x0) + 24, 3);
+      // 两根立柱（圆角柱 + 顶面受光）
+      for (const px of [x0, x1]) {
+        ctx.fillStyle = PAL.obstacle; barShape(px - 7, top, 14, GROUND_Y - top, 5); ctx.fill();
+        ctx.fillStyle = PAL.obstacleTop; ctx.fillRect(px - 7, top, 14, 4);
+      }
+      if (isCur) cueShape([[x0, top], [x1, top]], false, ba);
+      drawFlavor('对折', x0 + (x1 - x0) / 2, top - 18);
     },
   },
   {
@@ -244,19 +287,20 @@ const LEVELS = [
     ghost(){ const a = this.armReq, x = this.baseX;
       ghostShape([[x, GROUND_Y], [x, GROUND_Y - a], [x + a, GROUND_Y - a]], false); },
     scene(isCur, ba){
-      // 两个接触点：地面 + 平台底面（夹角≠直线 → 拐角自明）
+      // 接触点：地面 + 转角柱 + 平台底面（夹角≠直线 → 拐角自明）
+      const bx = this.baseX, py = this.platY, arm = this.armReq;
+      // 悬石平台（横梁）：圆角 + 顶面受光，保留轻微摇曳
       ctx.save();
       const wob = Math.sin(performance.now() / 260) * 0.02;
-      ctx.translate(this.baseX + 150, this.platY - 8);
-      ctx.rotate(wob);
-      ctx.fillStyle = '#8d8676'; ctx.fillRect(-150, -14, 300, 14);
-      ctx.fillStyle = '#6f695c'; ctx.fillRect(-150, -14, 300, 4);
+      ctx.translate(bx + 150, py - 8); ctx.rotate(wob);
+      ctx.fillStyle = PAL.obstacle; barShape(-150, -14, 300, 14, 5); ctx.fill();
+      ctx.fillStyle = PAL.obstacleTop; ctx.fillRect(-150, -14, 300, 4);
       ctx.restore();
-      ctx.fillStyle = '#4a4438'; ctx.fillRect(this.baseX - 6, this.platY, 12, 8);
-      if (isCur) cueShape([[this.baseX, GROUND_Y], [this.baseX, GROUND_Y - this.armReq],
-        [this.baseX + this.armReq, GROUND_Y - this.armReq]], false, ba);
-      ctx.fillStyle = 'rgba(70,60,45,.75)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('两段：竖 + 横', this.baseX + this.armReq / 2, this.platY - 22);
+      // 转角接触柱（圆头小柱 + 顶面受光）
+      ctx.fillStyle = PAL.obstacle; barShape(bx - 6, py - 2, 12, 12, 4); ctx.fill();
+      ctx.fillStyle = PAL.obstacleTop; ctx.fillRect(bx - 6, py - 2, 12, 3);
+      if (isCur) cueShape([[bx, GROUND_Y], [bx, py], [bx + arm, py]], false, ba);
+      drawFlavor('两段：竖横', bx + arm / 2, py - 22);
     },
   },
   {
@@ -277,14 +321,16 @@ const LEVELS = [
     ghost(){ ghostShape(arcPts(this.bankL, this.bankL + this.chord, GROUND_Y, this.arcReq, 26), false); },
     scene(isCur, ba){
       const R = this.bankL + this.chord;
-      ctx.fillStyle = '#5f88a8';                                  // 水（物理必然：直线会垂进水里）
+      ctx.fillStyle = PAL.water;                                  // 水（物理必然：直线会垂进水里）
       ctx.fillRect(this.bankL, GROUND_Y + 4, this.chord, 26);
-      ctx.fillStyle = '#b5a68e';
-      ctx.fillRect(this.bankL - 46, GROUND_Y, 46, VIEW_H - GROUND_Y + 60);
-      ctx.fillRect(R, GROUND_Y, 46, VIEW_H - GROUND_Y + 60);
+      // 两岸（圆角土丘剪影 + 顶面受光 = 拱的落点接触点）
+      ctx.fillStyle = PAL.ground;
+      for (const bx0 of [this.bankL - 46, R]) { barShape(bx0, GROUND_Y - 4, 46, VIEW_H - GROUND_Y + 60, 6); ctx.fill(); }
+      ctx.fillStyle = PAL.obstacleTop;
+      ctx.fillRect(this.bankL - 46, GROUND_Y - 4, 46, 3);
+      ctx.fillRect(R, GROUND_Y - 4, 46, 3);
       if (isCur) cueShape(arcPts(this.bankL, R, GROUND_Y, this.arcReq, 26), false, ba);
-      ctx.fillStyle = 'rgba(70,60,45,.75)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('弧比两岸直线长', (this.bankL + R) / 2, GROUND_Y + 48);
+      drawFlavor('弧比两岸直线长', (this.bankL + R) / 2, GROUND_Y + 48);
     },
   },
   {
@@ -306,7 +352,7 @@ const LEVELS = [
     scene(isCur, ba){
       ctx.save();
       ctx.globalAlpha = isCur ? 1 : 0.5;
-      ctx.strokeStyle = `rgba(140,165,120,${isCur ? ba : 0.35})`;
+      ctx.strokeStyle = `rgba(${PAL.ringRGB},${isCur ? ba : 0.35})`;
       ctx.lineWidth = 2.5; ctx.setLineDash([6, 7]);
       ctx.beginPath(); ctx.ellipse(this.targetCx, GROUND_Y, this.targetR, this.targetR * 0.38, 0, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
@@ -331,13 +377,15 @@ const LEVELS = [
     },
     ghost(){ ghostShape(triPts(this.tcx, GROUND_Y, this.sideReq), true); },
     scene(isCur, ba){
-      // 三个接触点（桩）→ 三角自明
+      // 三个接触点（圆头小桩）→ 三角自明
       const v = triPts(this.tcx, GROUND_Y, this.sideReq);
-      ctx.fillStyle = '#6d6455';
-      v.forEach(p => ctx.fillRect(p[0] - 3, p[1] - 16, 6, 16));
+      for (const p of v) {
+        ctx.fillStyle = PAL.obstacle; barShape(p[0] - 3, p[1] - 16, 6, 18, 3); ctx.fill();
+        ctx.fillStyle = PAL.obstacleTop; ctx.fillRect(p[0] - 3, p[1] - 16, 6, 3);
+        ctx.fillStyle = PAL.obstacleTop; ctx.beginPath(); ctx.arc(p[0], p[1] - 16, 3, 0, Math.PI * 2); ctx.fill();  // 圆头桩顶
+      }
       if (isCur) cueShape(v, true, ba);
-      ctx.fillStyle = 'rgba(70,60,45,.75)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('三边之和', this.tcx, GROUND_Y + 40);
+      drawFlavor('围出三角', this.tcx, GROUND_Y + 40);
     },
   },
   {
@@ -356,11 +404,14 @@ const LEVELS = [
     },
     ghost(){ ghostShape(polyPts(this.pcx, GROUND_Y, this.perimReq), true); },
     scene(isCur, ba){
-      ctx.fillStyle = '#8d8676';
-      polyPts(this.pcx, GROUND_Y, this.perimReq).forEach(p => ctx.fillRect(p[0] - 3, p[1] - 14, 6, 14));
-      if (isCur) cueShape(polyPts(this.pcx, GROUND_Y, this.perimReq), true, ba);
-      ctx.fillStyle = 'rgba(70,60,45,.75)'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('长短不一，全加起来', this.pcx, GROUND_Y + 42);
+      const pts = polyPts(this.pcx, GROUND_Y, this.perimReq);
+      for (const p of pts) {
+        ctx.fillStyle = PAL.obstacle; barShape(p[0] - 3, p[1] - 14, 6, 16, 3); ctx.fill();
+        ctx.fillStyle = PAL.obstacleTop; ctx.fillRect(p[0] - 3, p[1] - 14, 6, 3);
+        ctx.fillStyle = PAL.obstacleTop; ctx.beginPath(); ctx.arc(p[0], p[1] - 14, 3, 0, Math.PI * 2); ctx.fill();  // 圆头桩顶
+      }
+      if (isCur) cueShape(pts, true, ba);
+      drawFlavor('照着边围一圈', this.pcx, GROUND_Y + 42);
     },
   },
   {
@@ -383,15 +434,15 @@ const LEVELS = [
     scene(isCur, ba){
       const doorTop = GROUND_Y - this.doorS;
       const wallLeft = this.doorX - 30, wallRight = this.doorX + this.doorS + 30, wallTop = GROUND_Y - 140;
-      const lg = ctx.createLinearGradient(0, doorTop, 0, GROUND_Y);
-      lg.addColorStop(0, 'rgba(255,248,210,0.95)'); lg.addColorStop(1, 'rgba(255,235,170,0.7)');
+      const lg = ctx.createLinearGradient(0, doorTop, 0, GROUND_Y);   // 暖光门（保留既有渐变调性）
+      lg.addColorStop(0, PAL.doorWarm1); lg.addColorStop(1, PAL.doorWarm2);
       ctx.fillStyle = lg; ctx.fillRect(this.doorX, doorTop, this.doorS, this.doorS);
-      ctx.fillStyle = '#8a8578';
+      ctx.fillStyle = PAL.wall;                                        // 墙（统一调性）
       ctx.fillRect(wallLeft, wallTop, this.doorX - wallLeft, GROUND_Y - wallTop);
       ctx.fillRect(this.doorX + this.doorS, wallTop, wallRight - (this.doorX + this.doorS), GROUND_Y - wallTop);
       ctx.fillRect(this.doorX, wallTop, this.doorS, doorTop - wallTop);
       ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(this.doorX, doorTop, this.doorS, 8);
-      ctx.fillStyle = '#7f9a74';
+      ctx.fillStyle = PAL.bush;                                        // 灌木
       ctx.beginPath(); ctx.arc(wallLeft + 12, wallTop + 2, 10, Math.PI, 0); ctx.fill();
       ctx.beginPath(); ctx.arc(wallRight - 12, wallTop + 2, 10, Math.PI, 0); ctx.fill();
       if (isCur) cueShape(rectPts(this.doorX + this.doorS / 2, GROUND_Y - this.doorS / 2, this.doorS + 4), true, ba);
@@ -604,7 +655,7 @@ function updateTiger(dt){
 }
 
 // ===== 绘制 =====
-function getBlinkAlpha(){ if (blinkTimer < 1.5) return 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(blinkTimer * Math.PI * 8 / 3 - Math.PI / 2)); return 0.4; }
+function getBlinkAlpha(){ if (blinkTimer < 1.5) return 0.4 + 0.5 * (0.5 + 0.5 * Math.sin(blinkTimer * Math.PI * 8 / 3 - Math.PI / 2)); return 0.65; }
 
 function draw(){
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
@@ -615,9 +666,9 @@ function draw(){
 
   if (phase === 'ending'){ drawEnding(); ctx.restore(); return; }
   drawSky();
-  drawTrees(0.25, '#cdd8c6', 150, 100, 11);
-  drawTrees(0.5, '#a9bfa2', 190, 130, 23);
-  drawTrees(0.8, '#86a07e', 240, 160, 37);
+  drawTrees(0.25, PAL.treeFar, 150, 100, 11);
+  drawTrees(0.5, PAL.treeMid, 190, 130, 23);
+  drawTrees(0.8, PAL.treeNear, 240, 160, 37);
   ctx.save(); ctx.translate(-cameraX, 0);
   drawGround(); drawLevelElements(); drawRopeShape(); drawCharacter();
   ctx.restore();
@@ -625,7 +676,7 @@ function draw(){
   if (phase === 'fadeout'){ ctx.fillStyle = `rgba(20,18,15,${Math.min(fadeT,1)})`; ctx.fillRect(0,0,VIEW_W,VIEW_H); }
   ctx.restore();
 }
-function drawSky(){ const g = ctx.createLinearGradient(0,0,0,GROUND_Y); g.addColorStop(0,'#eef3e8'); g.addColorStop(1,'#dce6d2'); ctx.fillStyle = g; ctx.fillRect(0,0,VIEW_W,GROUND_Y); }
+function drawSky(){ const g = ctx.createLinearGradient(0,0,0,GROUND_Y); g.addColorStop(0,PAL.skyTop); g.addColorStop(1,PAL.skyBot); ctx.fillStyle = g; ctx.fillRect(0,0,VIEW_W,GROUND_Y); }
 function drawTrees(parallax, color, spacing, baseH, seed){
   const offset = cameraX * parallax;
   const startI = Math.floor(offset / spacing) - 1, endI = Math.ceil((offset + VIEW_W) / spacing) + 1;
@@ -635,18 +686,19 @@ function drawTrees(parallax, color, spacing, baseH, seed){
     drawTreeShape(wx - offset, GROUND_Y, baseH + ((i * 137 + seed) % 60) - 30);
   }
 }
-function drawTreeShape(x, baseY, h){
+function drawTreeShape(x, baseY, h){   // V1：多瓣叠加有机冠形（非单圆）
   const trunkW = Math.max(4, h * 0.07);
   ctx.fillRect(x - trunkW/2, baseY - h*0.42, trunkW, h*0.42);
-  const cy = baseY - h*0.42 - h*0.25, r1 = h*0.3, r2 = h*0.22;
-  ctx.beginPath(); ctx.arc(x, cy, r1, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(x - r1*0.7, cy + r1*0.35, r2, 0, Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(x + r1*0.7, cy + r1*0.35, r2, 0, Math.PI*2); ctx.fill();
+  const cy = baseY - h*0.42 - h*0.25, r = h*0.3;
+  ctx.beginPath(); ctx.arc(x, cy, r, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x - r*0.8, cy + r*0.30, r*0.62, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + r*0.8, cy + r*0.25, r*0.66, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + r*0.1, cy - r*0.55, r*0.55, 0, Math.PI*2); ctx.fill();
 }
-function drawGround(){
+function drawGround(){   // V1：单一暖土色带 + 顶边高光，去碎块
   const startX = cameraX - 60, endX = cameraX + VIEW_W + 60;
-  ctx.fillStyle = '#b5a68e'; ctx.fillRect(startX, GROUND_Y, endX - startX, VIEW_H - GROUND_Y + 60);
-  ctx.strokeStyle = '#9c8d75'; ctx.lineWidth = 2;
+  ctx.fillStyle = PAL.ground; ctx.fillRect(startX, GROUND_Y, endX - startX, VIEW_H - GROUND_Y + 60);
+  ctx.strokeStyle = PAL.groundTop; ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(startX, GROUND_Y); ctx.lineTo(endX, GROUND_Y); ctx.stroke();
 }
 function drawLevelElements(){
@@ -676,16 +728,16 @@ function drawRopeShape(){
     currentLevel.ghost();       // P2/P3：失败给相对信息（正确形状并排对比），不给数值
   }
 }
-function drawVerticalRope(x, y, len, alpha){
+function drawVerticalRope(x, y, len, alpha){   // V2：提对比 + 柔和投影 + 明确手持点（仅特效，几何不变）
   if (len <= 0 || alpha <= 0) return;
-  ctx.save(); ctx.globalAlpha = alpha; ctx.lineCap = 'round';
-  ctx.strokeStyle = 'rgba(0,0,0,0.1)'; ctx.lineWidth = 10;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = ROPE_SHADOW; ctx.lineWidth = 12;
   ctx.beginPath(); ctx.moveTo(x+2, y+2); ctx.lineTo(x+2, y-len+2); ctx.stroke();
-  ctx.strokeStyle = ROPE_C; ctx.lineWidth = 7;
+  ctx.strokeStyle = ROPE_C; ctx.lineWidth = 9;
   ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y-len); ctx.stroke();
   ctx.strokeStyle = ROPE_H; ctx.lineWidth = 2.5;
-  ctx.beginPath(); ctx.moveTo(x-1.5, y); ctx.lineTo(x-1.5, y-len); ctx.stroke();
-  ctx.fillStyle = ROPE_C; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(x-1.2, y); ctx.lineTo(x-1.2, y-len); ctx.stroke();
+  ctx.fillStyle = ROPE_C; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.fill();   // 手持点：明确生长原点
   ctx.restore();
 }
 function drawTiger(x, baseY, walkPhase, state){
