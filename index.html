@@ -62,6 +62,7 @@ const GROUND_Y = 440;
 const WORLD_W = 4200;
 
 let W, H, DPR, scale = 1, offsetX = 0, offsetY = 0;
+let bgGrad = null, bgGradH = -1;   // letterbox 背景渐变缓存（避免每帧重建）
 function resize() {
   DPR = Math.min(window.devicePixelRatio || 1, 2);
   W = window.innerWidth; H = window.innerHeight;
@@ -73,6 +74,12 @@ function resize() {
 }
 window.addEventListener('resize', resize);
 resize();
+
+// ===== Phase 1 调试探针 / URL 参数（G5）=====
+const QP = (typeof location !== 'undefined' && location.search) ? new URLSearchParams(location.search) : new URLSearchParams('');
+const SHOW_FPS = QP.get('fps') === '1';        // ?fps=1 帧率 overlay（为 Phase 2 60fps 验收准备）
+let __DBG_HIDETEXT = QP.get('notext') === '1'; // ?notext=1 直触无文字（P3 验证）
+let fpsSmoothed = 0;
 
 // ===== 形状类型系统（T2）：每个形状 = judge(判定标量) + band(容差) + snap(表现) + renderShape + ghost =====
 // 所有容差均为 [PLACEHOLDER · 待 σp 实测验证]
@@ -151,6 +158,7 @@ function barShape(x, y, w, h, r) {
 }
 // L3 场景 flavor（V1 去公式后降级：轻灰 11px、非必要通道）
 function drawFlavor(text, x, y) {
+  if (__DBG_HIDETEXT) return;   // G5：无文字验证开关
   ctx.save();
   ctx.fillStyle = 'rgba(70,60,45,0.5)';
   ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
@@ -450,6 +458,36 @@ const LEVELS = [
   },
 ];
 
+// ===== Prologue（Phase 1 无声上手：独立流程节点，不进 LEVELS / 不污染 report()）=====
+const PROLOGUE_DEMO_LOOP = 1.6;     // 鬼影手示范自循环时长（落在 1.2–1.8s 区间）
+const PROLOGUE_DEMO = {
+  id:'prologue', shape:'line',
+  handX:512, handY:GROUND_Y-40,
+  initLen:40, maxLen:300, growSpeed:110,
+  gapX1:524, gapX2:648,                 // 比 L1 更小 gap（onboarding 特例）
+  judge:(len)=>len,
+  band:[150, 250],                      // [PLACEHOLDER·待 σp] 首玩特宽容差
+  snap:(len)=>len,
+  renderShape(lenEff, alpha, offY, t){
+    if (t != null && t < 1) {
+      const sy = this.handY + (GROUND_Y - this.handY) * t;
+      const ang = -Math.PI/2 + (Math.PI/2) * t;
+      return strokeShape([[this.handX, sy + offY],
+        [this.handX + Math.cos(ang) * ropeLen, sy + Math.sin(ang) * ropeLen + offY]], alpha, false);
+    }
+    strokeShape([[this.handX, GROUND_Y + offY], [this.handX + lenEff, GROUND_Y + offY]], alpha, false);
+  },
+  ghost(){ ghostShape([[this.handX, GROUND_Y], [this.gapX2, GROUND_Y]], false); },
+  scene(){
+    ctx.fillStyle = PAL.pit;
+    ctx.fillRect(this.gapX1, GROUND_Y, this.gapX2 - this.gapX1, VIEW_H - GROUND_Y + 60);
+    for (const gx of [this.gapX1, this.gapX2]) {
+      ctx.fillStyle = PAL.obstacle; barShape(gx - 6, GROUND_Y - 5, 12, 16, 4); ctx.fill();
+      ctx.fillStyle = PAL.obstacleTop; ctx.fillRect(gx - 6, GROUND_Y - 5, 12, 3);
+    }
+  },
+};
+
 // ===== 状态 =====
 let phase = 'intro';
 let phaseTimer = 0, charX = 120, charAlpha = 1, cameraX = 0;
@@ -461,21 +499,33 @@ let tigerX = 0, tigerBaseX = 0, tigerTimer = 0, tigerState = 'stalking', rabbitS
 let shakeT = 0;                       // T9 屏震
 let levelStartWall = 0;               // T8 单关计时
 
+// Prologue 子状态机（不污染 LEVELS / metrics）
+let proSub = 'ready', demoT = 0;      // proSub: ready/growing/transforming/success/fail
+
+// ===== 安全存储（P1-1 修复：预览 iframe 常 sandbox 无 allow-same-origin，localStorage 会抛 SecurityError 使主循环崩溃；统一降级内存）=====
+const _mem = {};
+let _LS_OK = false;
+(function(){ try { const k='__sr_t'; localStorage.setItem(k,k); localStorage.removeItem(k); _LS_OK = true; } catch(e){ _LS_OK = false; } })();
+function safeGet(k){ try { return _LS_OK ? localStorage.getItem(k) : (k in _mem ? _mem[k] : null); } catch(e){ return k in _mem ? _mem[k] : null; } }
+function safeSet(k,v){ try { if (_LS_OK){ localStorage.setItem(k,v); return; } } catch(e){} _mem[k]=String(v); }
+function safeRemove(k){ try { if (_LS_OK) localStorage.removeItem(k); } catch(e){} delete _mem[k]; }
+
 // ===== 进度存档（T10）=====
 const SAVE_KEY = 'sr_progress_v1';
+const PROLOGUE_KEY = 'sr_prologue_v1';   // 仅首玩标记（resetGame / pReset 不清除）
 function loadProgress(){
-  try { return JSON.parse(localStorage.getItem(SAVE_KEY)) || null; } catch(e){ return null; }
+  try { const raw = safeGet(SAVE_KEY); return raw ? JSON.parse(raw) : null; } catch(e){ return null; }
 }
 function saveProgress(){
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({
+    safeSet(SAVE_KEY, JSON.stringify({
       levelIndex: Math.max(0, levelIndex + 1),
       completed: completedShapes.map(s => s.level.id),
       ts: Date.now(),
     }));
   } catch(e){}
 }
-function clearProgress(){ try { localStorage.removeItem(SAVE_KEY); } catch(e){} }
+function clearProgress(){ safeRemove(SAVE_KEY); }
 function rebuildCompleted(uptoIdx){
   completedShapes = [];
   for (let i = 0; i < uptoIdx && i < LEVELS.length; i++) {
@@ -529,7 +579,7 @@ function sfxSuccess(){ tone(660, 0.16, 'sine', 0.10); setTimeout(()=>tone(880, 0
 function sfxFail(){ tone(150, 0.18, 'sawtooth', 0.10); }
 function haptic(pattern){ try { navigator.vibrate && navigator.vibrate(pattern); } catch(e){} }
 
-function setHint(t){ const v = t || ''; if (hintEl.textContent !== v) hintEl.textContent = v; hintEl.style.opacity = v ? '1' : '0'; }
+function setHint(t){ if (__DBG_HIDETEXT) t = ''; const v = t || ''; if (hintEl.textContent !== v) hintEl.textContent = v; hintEl.style.opacity = v ? '1' : '0'; }
 function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
 function easeInOutCubic(t){ return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3)/2; }
 function updateCamera(dt){ const target = Math.max(0, Math.min(WORLD_W - VIEW_W, charX - 300)); cameraX += (target - cameraX) * Math.min(1, dt * 5); }
@@ -550,18 +600,49 @@ function resetGame(keepSave){
   walkTargetX = null; walkOnArrive = null; completedShapes = [];
   textTimer = 0; blinkTimer = 0; enterT = 0; fadeT = 0; endingT = 0; shakeT = 0;
   tigerState = 'stalking'; tigerTimer = 0;
-  if (!keepSave) clearProgress();
+  if (!keepSave) clearProgress();   // 仅清 SAVE_KEY；PROLOGUE_KEY 刻意保留（仅首玩标记，F7 分叉）
   setHint('');
+}
+
+// ===== Prologue 流程（Phase 1，独立节点，不进 LEVELS / 不污染 report）=====
+function startPrologue(){
+  phase = 'prologue'; proSub = 'ready'; phaseTimer = 0;
+  charX = PROLOGUE_DEMO.handX - 12; charAlpha = 1; cameraX = Math.max(0, charX - 300);
+  ropeLen = 0; demoT = 0; transformT = 0; successT = 0; failMsg = '';
+  setHint('');   // P1-5：零文字
+}
+function prologueEvaluate(){   // 轻量判定：屏蔽一切失败文字、不写 metrics / completed（P1-5 / P3）
+  const D = PROLOGUE_DEMO;
+  const eff = D.judge(ropeLen);
+  failMsg = '';
+  if (eff < D.band[0] || eff > D.band[1]){
+    proSub = 'fail'; phaseTimer = 0; setHint('');
+    shakeT = 0.2; sfxFail(); haptic(60);
+  } else {
+    proSub = 'success'; successT = 0; setHint('');
+    sfxSuccess(); haptic(28);
+  }
+}
+function finishPrologue(){     // 成功 → 落 PROLOGUE_KEY + 平滑进 L1（复用 walking 入场）
+  safeSet(PROLOGUE_KEY, '1');
+  startLevel(0);
 }
 
 // ===== 输入 =====
 canvas.addEventListener('pointerdown', e => {
   e.preventDefault();
   if (phase === 'ending' || phase === 'done') { resetGame(true); return; }
+  if (phase === 'prologue'){                  // P1-2：玩家按下立即中断 demo 进入 growing
+    if (proSub === 'ready'){ proSub = 'growing'; ropeLen = PROLOGUE_DEMO.initLen; demoT = 0; transformT = 0; setHint(''); }
+    return;
+  }
   if (phase === 'ready') { phase = 'growing'; setHint(''); }
   else if (phase === 'fixed') { phase = 'transforming'; transformT = 0; setHint(''); }
 });
-function release(){ if (phase === 'growing') { phase = 'fixed'; setHint(currentLevel.hintFixed); } }
+function release(){
+  if (phase === 'prologue' && proSub === 'growing'){ proSub = 'transforming'; transformT = 0; setHint(''); return; }  // 形变由情境施加，松手即放倒
+  if (phase === 'growing') { phase = 'fixed'; setHint(currentLevel.hintFixed); }
+}
 canvas.addEventListener('pointerup', e => { e.preventDefault(); release(); });
 canvas.addEventListener('pointercancel', e => { e.preventDefault(); release(); });
 canvas.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') release(); });
@@ -598,13 +679,38 @@ function onFail(msg, hint){
 let last = performance.now();
 function update(now){
   const dt = Math.min((now - last) / 1000, 0.05); last = now;
+  fpsSmoothed = fpsSmoothed ? fpsSmoothed * 0.92 + (1 / dt) * 0.08 : 1 / dt;
   updateCamera(dt);
   const activeLevelPhases = ['level_intro','ready','growing','fixed','transforming','success','fail','entering'];
   if (currentLevel && activeLevelPhases.includes(phase)) { textTimer += dt; blinkTimer += dt; }
   if (shakeT > 0) shakeT = Math.max(0, shakeT - dt);
   updateTiger(dt);
 
-  if (phase === 'intro'){ phaseTimer += dt; if (phaseTimer > 1.6) { const p = loadProgress(); if (p && p.levelIndex > 0 && p.levelIndex < LEVELS.length) { rebuildCompleted(p.levelIndex); startLevel(p.levelIndex); } else startLevel(0); } return; }
+  if (phase === 'intro'){
+    if (!safeGet(PROLOGUE_KEY)) { startPrologue(); return; }   // 首玩进入 Prologue（P1-1）；safeGet 防沙箱 localStorage 崩溃
+    phaseTimer += dt;
+    if (phaseTimer > 1.6) { const p = loadProgress(); if (p && p.levelIndex > 0 && p.levelIndex < LEVELS.length) { rebuildCompleted(p.levelIndex); startLevel(p.levelIndex); } else startLevel(0); }
+    return;
+  }
+  // ===== Prologue 子状态机（P1-1 / P1-2 / P1-5）=====
+  if (phase === 'prologue'){
+    if (proSub === 'ready'){
+      demoT += dt / PROLOGUE_DEMO_LOOP;                 // 鬼影手示范自循环（1.2–1.8s）
+      if (demoT >= 1) demoT -= 1;
+    } else if (proSub === 'growing'){
+      ropeLen = Math.min(PROLOGUE_DEMO.maxLen, ropeLen + PROLOGUE_DEMO.growSpeed * dt);
+    } else if (proSub === 'transforming'){
+      transformT += dt / 0.45;
+      if (transformT >= 1){ transformT = 1; prologueEvaluate(); }   // 零指标污染
+    } else if (proSub === 'success'){
+      successT += dt;
+      if (successT > 1.0){ finishPrologue(); }          // 写 PROLOGUE_KEY + startLevel(0)
+    } else if (proSub === 'fail'){
+      phaseTimer += dt;
+      if (phaseTimer > 1.2){ ropeLen = PROLOGUE_DEMO.initLen; transformT = 0; proSub = 'ready'; demoT = 0; setHint(''); }  // 重播示范·零文字
+    }
+    return;
+  }
   if (phase === 'walking'){
     if (walkTargetX !== null && charX < walkTargetX){
       charX = Math.min(walkTargetX, charX + 200 * dt);
@@ -660,6 +766,13 @@ function getBlinkAlpha(){ if (blinkTimer < 1.5) return 0.4 + 0.5 * (0.5 + 0.5 * 
 function draw(){
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.clearRect(0, 0, W, H);
+  // 竖屏/超宽 letterbox 区域填充协调渐变（替代纯底色空白，符合极简留白；不改游戏几何/P2/P5）
+  if (!bgGrad || bgGradH !== H) {
+    bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+    bgGrad.addColorStop(0, PAL.skyTop); bgGrad.addColorStop(0.55, PAL.skyBot); bgGrad.addColorStop(1, PAL.ground);
+    bgGradH = H;
+  }
+  ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, W, H);
   ctx.save();
   ctx.translate(offsetX, offsetY); ctx.scale(scale, scale);
   if (shakeT > 0){ const a = shakeT * 14; ctx.translate((Math.random()-0.5)*a, (Math.random()-0.5)*a); }
@@ -670,9 +783,20 @@ function draw(){
   drawTrees(0.5, PAL.treeMid, 190, 130, 23);
   drawTrees(0.8, PAL.treeNear, 240, 160, 37);
   ctx.save(); ctx.translate(-cameraX, 0);
-  drawGround(); drawLevelElements(); drawRopeShape(); drawCharacter();
+  drawGround();
+  if (phase === 'prologue'){
+    PROLOGUE_DEMO.scene();        // Prologue 独立场景（不进 LEVELS）
+    drawPrologueRope();           // demo / 生长环 / 放倒 / 成功 / 失败（全 ctx 叠加，P5）
+  } else {
+    drawLevelElements();
+    drawRopeShape();
+  }
+  drawCharacter();
   ctx.restore();
   drawLevelText(); drawMessage();
+  if (phase === 'prologue' && proSub === 'ready') drawTouchAffordance();   // P1-3 脉冲圈
+  else if (phase === 'ready') drawTouchAffordance();
+  if (SHOW_FPS) drawFpsOverlay();                                            // G5 ?fps=1
   if (phase === 'fadeout'){ ctx.fillStyle = `rgba(20,18,15,${Math.min(fadeT,1)})`; ctx.fillRect(0,0,VIEW_W,VIEW_H); }
   ctx.restore();
 }
@@ -713,7 +837,7 @@ function drawRopeShape(){
   for (const s of completedShapes) s.level.renderShape(s.len, 1, 0, 1);
   if (!currentLevel) return;
   if (['intro','walking','level_intro','done','entering','fadeout'].includes(phase)) return;
-  if (['ready','growing','fixed'].includes(phase)){ drawVerticalRope(currentLevel.handX, currentLevel.handY, ropeLen, 1); return; }
+  if (['ready','growing','fixed'].includes(phase)){ drawVerticalRope(currentLevel.handX, currentLevel.handY, ropeLen, 1); if (phase === 'growing') drawHoldProgress(currentLevel.handX, currentLevel.handY, ropeLen, currentLevel.maxLen); return; }
   if (phase === 'transforming'){
     const t = easeOutCubic(transformT);
     drawVerticalRope(currentLevel.handX, currentLevel.handY, ropeLen, 1 - t);
@@ -740,6 +864,102 @@ function drawVerticalRope(x, y, len, alpha){   // V2：提对比 + 柔和投影 
   ctx.fillStyle = ROPE_C; ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI*2); ctx.fill();   // 手持点：明确生长原点
   ctx.restore();
 }
+
+// ===== Phase 1 Prologue 绘制（P1-2 / P1-3 / P1-4，纯程序化·零文字·相对信息）=====
+function drawHandSilhouette(x, y, alpha){
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.fillStyle = '#3a3a30';
+  ctx.beginPath(); ctx.ellipse(x, y + 14, 13, 10, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x, y + 4, 6, 9, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + 12, y + 10, 4, 7, 0.4, 0, Math.PI*2); ctx.fill();
+  ctx.fillRect(x - 5, y + 18, 10, 14);
+  ctx.restore();
+}
+// 鬼影手示范：t∈[0,1] 按压→生长→松手→放倒成桥→成功闪烁；只用 snap 长度，绝不演示选择（P1-2）
+function drawGhostHand(t){
+  const D = PROLOGUE_DEMO;
+  const targetLen = (D.band[0] + D.band[1]) / 2;
+  const grow = Math.min(1, t / 0.4);
+  const isLay = t >= 0.4 && t < 0.8;
+  const isDone = t >= 0.8;
+  const layT = isLay ? (t - 0.4) / 0.4 : (isDone ? 1 : 0);
+  const curLen = targetLen * grow;
+  const handAlpha = isDone ? Math.max(0, 1 - (t - 0.8) / 0.2) : (isLay ? 1 - layT : 1);
+  drawHandSilhouette(D.handX, D.handY, 0.5 * handAlpha);
+  if (layT < 1) drawVerticalRope(D.handX, D.handY, curLen * (1 - layT), 0.7);
+  if (layT > 0){
+    const sy = D.handY + (GROUND_Y - D.handY) * layT;
+    const ang = -Math.PI/2 + (Math.PI/2) * layT;
+    const ex = D.handX + Math.cos(ang) * targetLen;
+    const ey = D.handY + Math.sin(ang) * targetLen;
+    ctx.save(); ctx.globalAlpha = 0.7; ctx.strokeStyle = ROPE_C; ctx.lineWidth = 9; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(D.handX, sy); ctx.lineTo(ex, ey); ctx.stroke(); ctx.restore();
+  }
+  if (isDone){
+    D.renderShape(targetLen, 1, 0, 1);   // 成功几何（t=1，不依赖 ropeLen）
+    D.ghost();
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 120);
+    ctx.save(); ctx.globalAlpha = 0.25 + 0.25 * pulse; ctx.strokeStyle = '#a8d08a'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(D.handX + (D.gapX2 - D.gapX1)/2, GROUND_Y, 64, 16, 0, 0, Math.PI*2); ctx.stroke(); ctx.restore();
+  }
+}
+// 触摸脉冲圈：ready 相"按住任意处"纯手势暗示，暖琥珀，无文字（P1-3）
+function drawTouchAffordance(){
+  let cx, cy;
+  if (phase === 'prologue'){ cx = PROLOGUE_DEMO.handX - cameraX; cy = PROLOGUE_DEMO.handY; }
+  else if (currentLevel){ cx = currentLevel.handX - cameraX; cy = currentLevel.handY; }
+  else return;
+  const t = performance.now() / 1000;
+  const pulse = 0.5 + 0.5 * Math.sin(t * 2.2);
+  ctx.save();
+  ctx.globalAlpha = 0.25 + 0.35 * pulse;
+  ctx.strokeStyle = CUE_C; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(cx, cy, 26 + 8 * pulse, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 0.5; ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+// 相对生长环：growing 相手持点周围相对填充弧，只表比例、绝无百分比/数字（P1-4 / P2）
+function drawHoldProgress(x, y, len, maxLen){
+  const frac = Math.max(0, Math.min(1, len / maxLen));
+  ctx.save();
+  ctx.strokeStyle = 'rgba(240,168,92,0.9)'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.arc(x, y, 22, -Math.PI/2, -Math.PI/2 + Math.PI*2*frac);
+  ctx.stroke();
+  ctx.restore();
+}
+// Prologue 各子态绘制
+function drawPrologueRope(){
+  const D = PROLOGUE_DEMO;
+  if (proSub === 'ready'){
+    drawGhostHand(demoT);
+  } else if (proSub === 'growing'){
+    drawVerticalRope(D.handX, D.handY, ropeLen, 1);
+    drawHoldProgress(D.handX, D.handY, ropeLen, D.maxLen);
+  } else if (proSub === 'transforming'){
+    const t = easeOutCubic(transformT);
+    drawVerticalRope(D.handX, D.handY, ropeLen, 1 - t);
+    D.renderShape(ropeLen * t, t, 0, null);
+  } else if (proSub === 'success'){
+    D.renderShape(D.snap(ropeLen), 1, 0, 1);   // P5：snap 几何不可动
+    D.ghost();
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 120);
+    ctx.save(); ctx.globalAlpha = 0.25 + 0.25 * pulse; ctx.strokeStyle = '#a8d08a'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(D.handX + (D.gapX2 - D.gapX1)/2, GROUND_Y, 64, 16, 0, 0, Math.PI*2); ctx.stroke(); ctx.restore();
+  } else if (proSub === 'fail'){
+    const ft = Math.min(phaseTimer / 0.7, 1);
+    D.renderShape(ropeLen, 1 - ft * 0.9, ft * 55, 1);   // 滑落淡出，无文字教学（P1-5）
+  }
+}
+// 帧率 overlay（G5 ?fps=1，仅调试，不影响玩法与 P2 玩家可见内容）
+function drawFpsOverlay(){
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(8, 8, 96, 26);
+  ctx.fillStyle = '#9fe88a'; ctx.font = '13px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText('fps ' + Math.round(fpsSmoothed), 14, 21);
+  ctx.restore();
+}
+
 function drawTiger(x, baseY, walkPhase, state){
   ctx.save(); ctx.translate(x, baseY);
   ctx.strokeStyle = '#e08a3c'; ctx.lineWidth = 5; ctx.lineCap = 'round';
@@ -786,11 +1006,17 @@ function drawCharacter(){
   ctx.fillRect(x-7+legSwing, bodyY+8, 5, 26); ctx.fillRect(x+2-legSwing, bodyY+8, 5, 26);
   ctx.strokeStyle = '#3a3a30'; ctx.lineWidth = 4; ctx.lineCap = 'round';
   ctx.beginPath();
-  if (currentLevel && ['ready','growing','fixed'].includes(phase)){ ctx.moveTo(x, bodyY-10); ctx.lineTo(currentLevel.handX, currentLevel.handY); }
-  else { const armSwing = walking ? Math.sin(performance.now()/130)*6 : 2; ctx.moveTo(x, bodyY-10); ctx.lineTo(x+8, bodyY+10+armSwing); }
+  const holding = (phase === 'prologue' && ['growing','fixed','transforming'].includes(proSub)) ||
+                  (currentLevel && ['ready','growing','fixed'].includes(phase));
+  if (holding){
+    const hx = phase === 'prologue' ? PROLOGUE_DEMO.handX : currentLevel.handX;
+    const hy = phase === 'prologue' ? PROLOGUE_DEMO.handY : currentLevel.handY;
+    ctx.moveTo(x, bodyY-10); ctx.lineTo(hx, hy);
+  } else { const armSwing = walking ? Math.sin(performance.now()/130)*6 : 2; ctx.moveTo(x, bodyY-10); ctx.lineTo(x+8, bodyY+10+armSwing); }
   ctx.stroke(); ctx.restore();
 }
 function drawLevelText(){
+  if (__DBG_HIDETEXT) return;   // G5：无文字验证开关
   if (!currentLevel || !currentLevel.introText) return;
   if (textTimer >= 3.0) return;
   const alpha = textTimer < 2.2 ? 1 : Math.max(0, (3.0 - textTimer)/0.8);
@@ -804,6 +1030,7 @@ function drawLevelText(){
   ctx.restore();
 }
 function drawMessage(){
+  if (__DBG_HIDETEXT) return;   // G5：无文字验证开关
   if (!failMsg) return;
   ctx.save();
   ctx.fillStyle = 'rgba(55,50,40,0.88)';
@@ -869,15 +1096,31 @@ document.getElementById('btnData').onclick = () => openPanel('data');
 document.getElementById('pClose').onclick = () => { panel.style.display = 'none'; };
 document.getElementById('pReset').onclick = () => { clearProgress(); panel.style.display = 'none'; resetGame(false); };
 
-// ===== 调试探针（供回归脚本驱动，T1）=====
+// ===== 调试探针（供回归脚本驱动，T1 / G5）=====
 window.__dbg = {
   get phase(){ return phase; }, get levelIndex(){ return levelIndex; }, get ropeLen(){ return ropeLen; },
   get level(){ return currentLevel; }, get charX(){ return charX; },
   get levels(){ return LEVELS; }, get completed(){ return completedShapes.length; },
   get failMsg(){ return failMsg; }, get metrics(){ return metrics; }, report,
+  get proSub(){ return proSub; }, get prologue(){ return phase === 'prologue'; }, get demoT(){ return demoT; },
   jump(i){ resetGame(true); rebuildCompleted(i);
     charX = LEVELS[i].triggerX - 30; cameraX = Math.max(0, charX - 300); startLevel(i); },
   clearSave(){ clearProgress(); },
+  setRope(l){ ropeLen = l; },
+  // G5：无文字开关
+  hideText(v){ __DBG_HIDETEXT = (v === undefined ? true : !!v); },
+  // Prologue 存档探测 / 驱动（供无头冒烟与 ?notext 验证）
+  isPrologueDone(){ return safeGet(PROLOGUE_KEY) === '1'; },
+  setPrologueDone(){ safeSet(PROLOGUE_KEY, '1'); },
+  clearPrologue(){ safeRemove(PROLOGUE_KEY); },
+  forcePrologue(){ resetGame(true); safeRemove(PROLOGUE_KEY); startPrologue(); },
+  // 直接驱动 Prologue 结局（success / fail），绕过输入事件，供无头冒烟
+  prologueSim(outcome){
+    if (phase !== 'prologue') return false;
+    ropeLen = outcome === 'success' ? (PROLOGUE_DEMO.band[0] + PROLOGUE_DEMO.band[1]) / 2 : PROLOGUE_DEMO.band[0] - 30;
+    proSub = 'transforming'; transformT = 1; prologueEvaluate();
+    return true;
+  },
 };
 
 function loop(now){ update(now); draw(); requestAnimationFrame(loop); }
